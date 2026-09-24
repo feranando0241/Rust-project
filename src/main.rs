@@ -1,6 +1,6 @@
 //! # OxideClean
-//! 
-//! Herramienta de escaneo, organización y optimización de archivos construida en Rust.
+//!
+//! A file scanning, organization, and optimization tool built in Rust.
 
 mod models;
 mod scanner;
@@ -23,22 +23,22 @@ use models::FileInfo;
 use scanner::{list_accessible_subdirectories, scan_directory};
 use similarity::find_similar_documents;
 
-/// Punto de entrada principal de la aplicación.
+/// Application entry point.
 fn main() {
-    println!(" OxideClean — Organizador & Visor de Archivos");
-    println!("=================================================");
+    println!(" OxideClean — File Organizer & Scanner");
+    println!("=========================================");
 
     loop {
-        println!("\nOpciones de inicio:");
-        println!("   - Escribe una ruta a escanear (ej: ~/Downloads, . para actual)");
-        println!("   - Escribe 'dirs' o 'ls' para explorar tus carpetas accesibles");
-        println!("   - Escribe '0' o 'exit' para salir");
-        print!("Ingresa tu opción o ruta: ");
+        println!("\nStart options:");
+        println!("   - Type a path to scan (e.g. ~/Downloads, . for current)");
+        println!("   - Type 'dirs' or 'ls' to browse your accessible folders");
+        println!("   - Type '0' or 'exit' to quit");
+        print!("Enter your option or path: ");
 
         let user_input = read_line_from_user();
 
         if is_exit_command(&user_input) {
-            println!("¡Hasta luego! Gracias por usar OxideClean.");
+            println!("Goodbye! Thanks for using OxideClean.");
             break;
         }
 
@@ -52,12 +52,12 @@ fn main() {
         let target_path = resolve_user_path(&user_input);
 
         if !target_path.exists() {
-            eprintln!("La ruta '{}' no existe. Intenta con otra.", target_path.display());
+            eprintln!("Path '{}' does not exist. Try another.", target_path.display());
             continue;
         }
 
         if !target_path.is_dir() {
-            eprintln!("'{}' no es un directorio. Intenta con otra ruta.", target_path.display());
+            eprintln!("'{}' is not a directory. Try another path.", target_path.display());
             continue;
         }
 
@@ -65,7 +65,7 @@ fn main() {
     }
 }
 
-/// Ejecuta el explorador interactivo de directorios accesibles.
+/// Runs the interactive accessible-directory browser.
 fn run_directory_browser() -> Option<PathBuf> {
     let mut current_browser_dir = if let Some(home) = std::env::var_os("HOME") {
         PathBuf::from(home)
@@ -77,27 +77,31 @@ fn run_directory_browser() -> Option<PathBuf> {
         let subdirs = match list_accessible_subdirectories(&current_browser_dir) {
             Ok(dirs) => dirs,
             Err(err) => {
-                eprintln!("No se pudo listar '{}': {}", current_browser_dir.display(), err);
+                eprintln!("Could not list '{}': {}", current_browser_dir.display(), err);
                 return None;
             }
         };
 
         print_accessible_directories(&current_browser_dir, &subdirs);
 
-        println!("Navegación:");
-        println!("   - Ingresa el número [#] de la carpeta para entrar o escanearla");
-        println!("   - Ingresa '..' para subir un nivel");
-        println!("   - Ingresa 'scan' para escanear esta carpeta actual ({})", current_browser_dir.display());
-        println!("   - Ingresa '0' o 'cancelar' para volver");
-        print!("Selecciona: ");
+        println!("Navigation:");
+        println!("   - Enter a folder number [#] to enter or scan it");
+        println!("   - Enter '..' to go up one level");
+        println!("   - Enter 'scan' to scan the current folder ({})", current_browser_dir.display());
+        println!("   - Enter '0', 'cancel', or 'exit' to go back");
+        print!("Select: ");
 
         let choice = read_line_from_user();
 
-        if choice == "0" || choice.eq_ignore_ascii_case("cancelar") || choice.eq_ignore_ascii_case("volver") || choice.eq_ignore_ascii_case("exit") {
+        if choice == "0"
+            || choice.eq_ignore_ascii_case("cancel")
+            || choice.eq_ignore_ascii_case("back")
+            || choice.eq_ignore_ascii_case("exit")
+        {
             return None;
         }
 
-        if choice.eq_ignore_ascii_case("scan") || choice.eq_ignore_ascii_case("analizar") {
+        if choice.eq_ignore_ascii_case("scan") || choice.eq_ignore_ascii_case("analyze") {
             return Some(current_browser_dir);
         }
 
@@ -105,7 +109,7 @@ fn run_directory_browser() -> Option<PathBuf> {
             if let Some(parent) = current_browser_dir.parent() {
                 current_browser_dir = parent.to_path_buf();
             } else {
-                println!("Ya estás en la raíz del sistema de archivos.");
+                println!("You are already at the root of the file system.");
             }
             continue;
         }
@@ -113,11 +117,11 @@ fn run_directory_browser() -> Option<PathBuf> {
         if let Ok(idx) = choice.parse::<usize>() {
             if idx >= 1 && idx <= subdirs.len() {
                 let chosen = &subdirs[idx - 1];
-                println!("\n¿Qué deseas hacer con '{}'?", chosen.display());
-                println!("  [1] Escanear y analizar esta carpeta");
-                println!("  [2] Entrar y ver sus subcarpetas");
-                println!("  [0] Volver");
-                print!("        Opción: ");
+                println!("\nWhat do you want to do with '{}'?", chosen.display());
+                println!("  [1] Scan and analyze this folder");
+                println!("  [2] Enter and browse its subfolders");
+                println!("  [0] Go back");
+                print!("        Option: ");
 
                 let sub_choice = read_line_from_user();
                 match sub_choice.as_str() {
@@ -128,51 +132,51 @@ fn run_directory_browser() -> Option<PathBuf> {
                     _ => {}
                 }
             } else {
-                println!("Número fuera de rango.");
+                println!("Number out of range.");
             }
         } else {
-            println!("Opción no reconocida.");
+            println!("Unrecognized option.");
         }
     }
 }
 
-/// Procesa y escanea la ruta seleccionada.
+/// Scans and processes the selected path.
 fn process_target_path(target_path: &Path) {
-    println!("\n Escaneando recursivamente '{}'...", target_path.display());
+    println!("\n Scanning '{}' recursively...", target_path.display());
 
     match scan_directory(target_path) {
         Ok(files) if files.is_empty() => {
-            println!(" No se encontraron archivos en '{}'.", target_path.display());
+            println!(" No files found in '{}'.", target_path.display());
         }
         Ok(files) => {
             print_tree(target_path, &files);
             run_action_menu(target_path, &files);
         }
         Err(error) => {
-            eprintln!("Error al escanear: {}", error);
+            eprintln!("Scan error: {}", error);
         }
     }
 }
 
 // ─────────────────────────────────────────────────────────────
-// MENÚ DE ACCIONES POST-ESCANEO
+// POST-SCAN ACTION MENU
 // ─────────────────────────────────────────────────────────────
 
-/// Muestra y ejecuta el submenú de acciones para la carpeta actualmente analizada.
+/// Displays and runs the action sub-menu for the currently scanned folder.
 fn run_action_menu(target_path: &Path, files: &[FileInfo]) {
     loop {
         println!("┌────────────────────────────────────────────────────────────┐");
-        println!("│ ¿Qué deseas hacer con esta carpeta?                        │");
-        println!("│ [1] Ver árbol completo de archivos                         │");
-        println!("│ [2] Ver Top 10 archivos más pesados                        │");
-        println!("│ [3] Filtrar por tipo / extensión (ej: pdf, png)            │");
-        println!("│ [4] Buscar duplicados y limpiar a la Papelera              │");
-        println!("│ [5] Ver subdirectorios accesibles en esta ruta             │");
-        println!("│ [6] Analizar similitud de contenido entre documentos       │");
-        println!("│ [7] Buscar archivos con el mismo nombre                    │");
-        println!("│ [0] Volver al menú principal / Escanear otra carpeta       │");
+        println!("│ What do you want to do with this folder?                   │");
+        println!("│ [1] View full file tree                                    │");
+        println!("│ [2] View Top 10 largest files                              │");
+        println!("│ [3] Filter by type / extension (e.g. pdf, png)             │");
+        println!("│ [4] Find duplicates and move to Trash                      │");
+        println!("│ [5] View accessible subdirectories in this path            │");
+        println!("│ [6] Analyze content similarity between documents           │");
+        println!("│ [7] Find files with the same name                          │");
+        println!("│ [0] Back to main menu / Scan another folder                │");
         println!("└────────────────────────────────────────────────────────────┘");
-        print!("Selecciona una opción [0-7]: ");
+        print!("Select an option [0-7]: ");
 
         let option = read_line_from_user();
 
@@ -185,14 +189,14 @@ fn run_action_menu(target_path: &Path, files: &[FileInfo]) {
                 print_top_largest(&top_10);
             }
             "3" => {
-                println!("\nIngresa la extensión a buscar (ej: pdf, mov, png, jpg):");
+                println!("\nEnter the extension to search for (e.g. pdf, mov, png, jpg):");
                 let ext = read_line_from_user();
                 if ext.is_empty() {
-                    println!("No ingresaste ninguna extensión.");
+                    println!("No extension entered.");
                 } else {
                     let filtered = filter_by_extension(files, &ext);
                     if filtered.is_empty() {
-                        println!("No se encontraron archivos con la extensión '.{}'.", ext);
+                        println!("No files found with extension '.{}'.", ext);
                     } else {
                         print_filtered_files(&ext, &filtered);
                     }
@@ -205,7 +209,7 @@ fn run_action_menu(target_path: &Path, files: &[FileInfo]) {
                 if let Ok(subdirs) = list_accessible_subdirectories(target_path) {
                     print_accessible_directories(target_path, &subdirs);
                 } else {
-                    eprintln!(" No se pudieron listar los subdirectorios.");
+                    eprintln!(" Could not list subdirectories.");
                 }
             }
             "6" => {
@@ -214,23 +218,23 @@ fn run_action_menu(target_path: &Path, files: &[FileInfo]) {
             "7" => {
                 handle_same_name_files(files);
             }
-            "0" | "exit" | "volver" => {
-                println!("Regresando al menú principal...");
+            "0" | "exit" | "back" => {
+                println!("Returning to main menu...");
                 break;
             }
             _ => {
-                println!("Opción no válida. Por favor ingresa un número del 0 al 7.");
+                println!("Invalid option. Please enter a number from 0 to 7.");
             }
         }
     }
 }
 
-/// Ejecuta el análisis de similitud de contenido interactivo.
+/// Runs the interactive document similarity analysis.
 ///
-/// El análisis compara un archivo base contra todos los demás documentos
-/// de la carpeta escaneada usando un score compuesto (vocabulario + frases + longitud).
+/// Compares a base file against all other documents in the scanned folder
+/// using a composite score (vocabulary + phrases + length).
 fn handle_similarity_analysis(files: &[FileInfo]) {
-    // Filtrar solo archivos de texto y PDFs
+    // Filter only text files and PDFs
     let text_or_pdf_files: Vec<&FileInfo> = files
         .iter()
         .filter(|f| {
@@ -243,12 +247,12 @@ fn handle_similarity_analysis(files: &[FileInfo]) {
         .collect();
 
     if text_or_pdf_files.len() < 2 {
-        println!("\nSe necesitan al menos 2 archivos de texto/PDF en esta carpeta para comparar.");
-        println!("Tipos soportados: PDF, TXT, MD, código fuente (rs, py, js, c, cpp), JSON, CSV, DOCX\n");
+        println!("\nAt least 2 text/PDF files are needed in this folder to compare.");
+        println!("Supported types: PDF, TXT, MD, source code (rs, py, js, c, cpp), JSON, CSV, DOCX\n");
         return;
     }
 
-    println!("\nSelecciona el archivo BASE que deseas comparar contra los demás:");
+    println!("\nSelect the BASE file to compare against the others:");
     println!("──────────────────────────────────────────────────────────────────────────");
 
     let selected = match select_file_paginated(&text_or_pdf_files) {
@@ -256,33 +260,33 @@ fn handle_similarity_analysis(files: &[FileInfo]) {
         None => return,
     };
 
-    // Guía de umbrales para el usuario
-    println!("\nConfigura el umbral mínimo de similitud:");
+    // Threshold guide for the user
+    println!("\nConfigure the minimum similarity threshold:");
     println!("──────────────────────────────────────────────────────────────────────────");
-    println!("   El score combina vocabulario compartido, frases en común y longitud.");
-    println!("   Guía de referencia para elegir tu umbral:");
+    println!("   The score combines shared vocabulary, common phrases, and length.");
+    println!("   Reference guide for choosing your threshold:");
     println!("   ─────────────────────────────────────────────────────────────────────");
-    println!("   │  >= 70%  │ Muy similares: mismo tema, estructura y frases parecidas │");
-    println!("   │  40–69%  │ Relacionados: vocabulario común, diferente enfoque       │");
-    println!("   │  15–39%  │ Algo en común: comparten algunos términos del área       │");
-    println!("   │  < 15%   │ Distantes: muy poca coincidencia de contenido            │");
+    println!("   │  >= 70%  │ Very similar: same topic, structure, and phrasing      │");
+    println!("   │  40-69%  │ Related: shared vocabulary, different focus            │");
+    println!("   │  15-39%  │ Somewhat related: share some terms in the field        │");
+    println!("   │  < 15%   │ Distant: very little content overlap                  │");
     println!("   ─────────────────────────────────────────────────────────────────────");
-    println!("  [1] Automático — Muestra documentos con >= 30% de similitud");
-    println!("  [2] Personalizado — Tú eliges el porcentaje mínimo");
-    print!("Opción [1 o 2]: ");
+    println!("  [1] Automatic  — Shows documents with >= 30% similarity");
+    println!("  [2] Custom     — You choose the minimum percentage");
+    print!("Option [1 or 2]: ");
 
     let mode_choice = read_line_from_user();
     let threshold: f64 = match mode_choice.as_str() {
         "2" => {
-            print!("Ingresa el porcentaje mínimo (ej: 10, 30, 50, 80): ");
+            print!("Enter the minimum percentage (e.g. 10, 30, 50, 80): ");
             let custom_input = read_line_from_user();
             custom_input.parse::<f64>().unwrap_or(30.0).clamp(0.0, 100.0)
         }
-        _ => 30.0, // Modo automático: 30% es un umbral más útil que 50%
+        _ => 30.0, // Automatic mode: 30% is more useful than 50%
     };
 
     println!(
-        "\n Analizando similitudes contra '{}' (umbral: >= {:.1}%)...",
+        "\n Analyzing similarities against '{}' (threshold: >= {:.1}%)...",
         selected.name(),
         threshold
     );
@@ -291,18 +295,18 @@ fn handle_similarity_analysis(files: &[FileInfo]) {
     print_similarity_results(selected.name(), &matches, threshold);
 }
 
-/// Muestra una lista de archivos de forma paginada (20 por página) y permite
-/// al usuario navegar entre páginas o buscar por nombre antes de seleccionar.
+/// Displays a paginated file list (20 per page) and lets the user
+/// navigate pages or search by name before selecting.
 ///
-/// Retorna el archivo elegido, o `None` si el usuario cancela.
+/// Returns the chosen file, or `None` if the user cancels.
 fn select_file_paginated<'a>(files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
     const PAGE_SIZE: usize = 20;
     let total = files.len();
-    // total_pages es fijo: se usa en el encabezado cuando no hay búsqueda activa.
-    // page_total se recalcula en cada iteración para reflejar la lista activa (puede ser filtrada).
+    // total_pages is fixed: used in the header when no search is active.
+    // page_total is recalculated each iteration to reflect the active list (may be filtered).
     let total_pages = total.div_ceil(PAGE_SIZE);
     let mut current_page: usize = 0;
-    // Lista activa: puede ser el listado completo o un resultado de búsqueda.
+    // Active list: may be the full listing or a search result.
     let mut active_list: Vec<&FileInfo> = files.to_vec();
     let mut search_active = false;
 
@@ -313,31 +317,31 @@ fn select_file_paginated<'a>(files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
         let end = (start + PAGE_SIZE).min(active_list.len());
         let page_slice = &active_list[start..end];
 
-        // Encabezado de página
+        // Page header
         if search_active {
             println!(
-                "\n Resultados de búsqueda ({} encontrados) — Página {}/{}",
+                "\n Search results ({} found) — Page {}/{}",
                 active_list.len(), page + 1, page_total
             );
         } else {
             println!(
-                "\n Archivos disponibles ({} total) — Página {}/{}",
+                "\n Available files ({} total) — Page {}/{}",
                 total, page + 1, total_pages
             );
         }
         println!("──────────────────────────────────────────────────────────────────────────");
-        println!("  {:<4}  {:<30}  {:<6}  {}", "#", "NOMBRE", "TIPO", "CARPETA");
+        println!("  {:<4}  {:<30}  {:<6}  {}", "#", "NAME", "TYPE", "FOLDER");
         println!("  ────  ──────────────────────────────  ──────  ──────────────────────────");
 
         for (i, f) in page_slice.iter().enumerate() {
             let global_num = start + i + 1;
             let ext = f.extension.as_deref().unwrap_or("?").to_uppercase();
-            // Mostrar solo el nombre de la carpeta contenedora para no llenar la pantalla
+            // Show only the containing folder name to avoid cluttering the screen
             let folder = f.path
                 .parent()
                 .and_then(|p| p.file_name())
                 .and_then(|n| n.to_str())
-                .unwrap_or("raíz");
+                .unwrap_or("root");
             println!(
                 "  {:<4}  {:<30}  {:<6}  {}",
                 format!("[{}]", global_num),
@@ -348,29 +352,29 @@ fn select_file_paginated<'a>(files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
         }
 
         println!("──────────────────────────────────────────────────────────────────────────");
-        println!("Navegación:");
+        println!("Navigation:");
 
-        // Solo mostrar opciones de paginación cuando hay más de una página
+        // Only show pagination options when there is more than one page
         if page_total > 1 {
             if page + 1 < page_total {
-                println!("  [n] Página siguiente →");
+                println!("  [n] Next page →");
             }
             if page > 0 {
-                println!("  [p] Página anterior ←");
+                println!("  [p] Previous page ←");
             }
         }
         if search_active {
-            println!("  [r] Resetear búsqueda / ver todos");
+            println!("  [r] Reset search / show all");
         } else {
-            println!("  [b] Buscar por nombre de archivo");
+            println!("  [b] Search by file name");
         }
-        println!("  [0] Cancelar");
-        print!("Ingresa un numero o comando: ");
+        println!("  [0] Cancel");
+        print!("Enter a number or command: ");
 
         let input = read_line_from_user();
 
         match input.to_lowercase().as_str() {
-            "0" | "cancelar" => return None,
+            "0" | "cancel" => return None,
 
             "n" if page + 1 < page_total => {
                 current_page = page + 1;
@@ -380,10 +384,10 @@ fn select_file_paginated<'a>(files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
             }
 
             "b" => {
-                print!("Escribe parte del nombre a buscar: ");
+                print!("Type part of the file name to search: ");
                 let query = read_line_from_user().to_lowercase();
                 if query.is_empty() {
-                    println!("Búsqueda vacía. Mostrando todos los archivos.");
+                    println!("Empty search. Showing all files.");
                     active_list = files.to_vec();
                     search_active = false;
                 } else {
@@ -396,11 +400,11 @@ fn select_file_paginated<'a>(files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
                     current_page = 0;
 
                     if active_list.is_empty() {
-                        println!("No se encontraron archivos con '{}'. Volviendo a la lista completa.", query);
+                        println!("No files found with '{}'. Returning to full list.", query);
                         active_list = files.to_vec();
                         search_active = false;
                     } else {
-                        println!(" {} archivo(s) encontrado(s) con '{}'.", active_list.len(), query);
+                        println!(" {} file(s) found with '{}'.", active_list.len(), query);
                     }
                 }
             }
@@ -412,24 +416,24 @@ fn select_file_paginated<'a>(files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
             }
 
             raw => {
-                // Intentar interpretar como número de selección
+                // Try to interpret as a selection number
                 if let Ok(num) = raw.parse::<usize>() {
                     if num >= 1 && num <= active_list.len() {
                         let chosen = active_list[num - 1];
-                        println!("\n Seleccionado: {} ({})", chosen.name(), chosen.path.display());
+                        println!("\n Selected: {} ({})", chosen.name(), chosen.path.display());
                         return Some(chosen);
                     } else {
-                        println!("Número fuera de rango (1–{}). Intenta de nuevo.", active_list.len());
+                        println!("Number out of range (1-{}). Try again.", active_list.len());
                     }
                 } else {
-                    println!("Opción no reconocida. Usa un número, 'n', 'p', 'b', 'r' o '0'.");
+                    println!("Unrecognized option. Use a number, 'n', 'p', 'b', 'r', or '0'.");
                 }
             }
         }
     }
 }
 
-/// Acorta un texto al máximo de caracteres indicado, añadiendo '…' si fue cortado.
+/// Truncates a string to the given maximum character count, appending '…' if cut.
 fn truncate_name(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -439,24 +443,24 @@ fn truncate_name(s: &str, max: usize) -> String {
     }
 }
 
-/// Busca y muestra archivos que comparten el mismo nombre dentro de la carpeta escaneada.
+/// Finds and displays files that share the same name within the scanned folder.
 ///
-/// A diferencia de los duplicados exactos (opción 4), aquí no se analiza el contenido:
-/// dos archivos con el mismo nombre pero diferente contenido (ej: versiones distintas
-/// de un documento) también aparecerán listados.
+/// Unlike exact duplicates (option 4), content is not analyzed here:
+/// two files with the same name but different content (e.g. different versions
+/// of a document) will also appear in the list.
 fn handle_same_name_files(files: &[FileInfo]) {
-    println!("\nBuscando archivos con el mismo nombre...");
+    println!("\nSearching for files with the same name...");
     let groups = find_same_name_files(files);
     print_same_name_results(&groups);
 }
 
-/// Ejecuta el análisis de duplicados por Hash SHA-256 y ofrece moverlos a la papelera.
+/// Runs the SHA-256 duplicate analysis and offers to move them to the Trash.
 fn handle_duplicates_and_trash(files: &[FileInfo]) {
-    println!("\nCalculando hashes SHA-256 para verificar duplicados exactos...");
+    println!("\nCalculating SHA-256 hashes to find exact duplicates...");
     let duplicate_groups = find_exact_duplicates(files);
 
     if duplicate_groups.is_empty() {
-        println!("¡Excelente! No se encontraron archivos duplicados exactos en esta carpeta.\n");
+        println!("Great! No exact duplicate files were found in this folder.\n");
         return;
     }
 
@@ -467,45 +471,45 @@ fn handle_duplicates_and_trash(files: &[FileInfo]) {
         .flat_map(|g| g.duplicates.clone())
         .collect();
 
-    println!("¿Deseas mover estos {} archivo(s) duplicados a la Papelera de reciclaje?", files_to_trash.len());
-    println!("Ingresa 's' o 'si' para confirmar, cualquier otra tecla para cancelar:");
+    println!("Do you want to move these {} duplicate file(s) to the Trash?", files_to_trash.len());
+    println!("Enter 'y' or 'yes' to confirm, anything else to cancel:");
 
     let confirmation = read_line_from_user();
 
-    if confirmation.eq_ignore_ascii_case("s") || confirmation.eq_ignore_ascii_case("si") {
+    if confirmation.eq_ignore_ascii_case("y") || confirmation.eq_ignore_ascii_case("yes") {
         match send_files_to_trash(&files_to_trash) {
             Ok(count) => {
-                println!("\n¡Éxito! Se movieron {} archivo(s) a la Papelera de tu Mac.", count);
-                println!("Puedes restaurarlos desde la Papelera si los necesitas.\n");
+                println!("\nSuccess! {} file(s) moved to the Trash.", count);
+                println!("You can restore them from the Trash if needed.\n");
             }
             Err(err) => {
                 eprintln!("\n{}", err);
             }
         }
     } else {
-        println!("\nOperación cancelada. No se modificó ningún archivo.\n");
+        println!("\nOperation cancelled. No files were modified.\n");
     }
 }
 
 // ─────────────────────────────────────────────────────────────
-// FUNCIONES AUXILIARES DE ENTRADA Y RUTAS
+// INPUT AND PATH HELPER FUNCTIONS
 // ─────────────────────────────────────────────────────────────
 
-/// Lee una línea desde la entrada estándar (teclado) y elimina espacios y saltos de línea.
+/// Reads a line from standard input (keyboard) and trims whitespace and newlines.
 fn read_line_from_user() -> String {
     let mut buffer = String::new();
     io::stdin()
         .read_line(&mut buffer)
-        .expect("Error al leer la entrada del usuario");
+        .expect("Failed to read user input");
     buffer.trim().to_string()
 }
 
-/// Comprueba si el texto ingresado corresponde a un comando de salida.
+/// Returns true if the given input matches a quit command.
 fn is_exit_command(input: &str) -> bool {
     input == "0" || input.eq_ignore_ascii_case("exit")
 }
 
-/// Convierte la entrada del usuario en un `PathBuf` válido, expandiendo `~` al directorio home.
+/// Converts user input into a valid `PathBuf`, expanding `~` to the home directory.
 fn resolve_user_path(input: &str) -> PathBuf {
     if input.starts_with("~/") || input == "~" {
         if let Some(home) = std::env::var_os("HOME") {
@@ -525,7 +529,7 @@ fn resolve_user_path(input: &str) -> PathBuf {
 }
 
 // ─────────────────────────────────────────────────────────────
-// PRUEBAS AUTOMATIZADAS
+// AUTOMATED TESTS
 // ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -559,25 +563,25 @@ mod tests {
         assert!(should_ignore_directory("target"));
         assert!(should_ignore_directory(".git"));
         assert!(should_ignore_directory(".cache"));
-        assert!(!should_ignore_directory("fotos"));
-        assert!(!should_ignore_directory("documentos"));
+        assert!(!should_ignore_directory("photos"));
+        assert!(!should_ignore_directory("documents"));
     }
 
     #[test]
     fn test_similarity_algorithm() {
         use std::collections::HashSet;
         let mut set1 = HashSet::new();
-        set1.insert("tesis sobre inteligencia".to_string());
-        set1.insert("inteligencia artificial aplicada".to_string());
-        set1.insert("resultados del experimento".to_string());
+        set1.insert("thesis about intelligence".to_string());
+        set1.insert("applied artificial intelligence".to_string());
+        set1.insert("experiment results".to_string());
 
         let mut set2 = HashSet::new();
-        set2.insert("tesis sobre inteligencia".to_string());
-        set2.insert("inteligencia artificial aplicada".to_string());
-        set2.insert("otra seccion diferente".to_string());
+        set2.insert("thesis about intelligence".to_string());
+        set2.insert("applied artificial intelligence".to_string());
+        set2.insert("another different section".to_string());
 
         let (sim, count) = calculate_jaccard_similarity(&set1, &set2);
         assert_eq!(count, 2);
-        assert!(sim >= 50.0, "Debe tener al menos 50% de similitud");
+        assert!(sim >= 50.0, "Should have at least 50% similarity");
     }
 }

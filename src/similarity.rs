@@ -1,24 +1,24 @@
 //! # similarity.rs
 //!
-//! Módulo para comparar el contenido de documentos y detectar similitudes.
+//! Module for comparing document content and detecting similarities.
 //!
-//! ## ¿Cómo funciona?
+//! ## How it works
 //!
-//! El análisis usa un **Score Compuesto** que combina tres métricas:
+//! The analysis uses a **Composite Score** that combines three metrics:
 //!
-//! 1. **Vocabulario compartido (50%)**: Qué tan parecido es el vocabulario entre documentos.
-//!    Si dos tesis hablan de los mismos temas, sus palabras clave se van a repetir.
-//!    → Usa Coeficiente de Jaccard sobre el conjunto de palabras únicas.
+//! 1. **Shared vocabulary (50%)**: How similar the vocabulary is between documents.
+//!    If two papers cover the same topics, their keywords will repeat.
+//!    → Uses Jaccard coefficient over the set of unique words.
 //!
-//! 2. **Frases en común (40%)**: Si además de las mismas palabras, aparecen seguidas
-//!    en el mismo orden (bigramas = pares de palabras).
-//!    → Usa Coeficiente de Jaccard sobre bigramas (shingles de 2 palabras).
+//! 2. **Common phrases (40%)**: Whether the same words also appear consecutively
+//!    in the same order (bigrams = pairs of words).
+//!    → Uses Jaccard coefficient over bigrams (2-word shingles).
 //!
-//! 3. **Proporción de longitud (10%)**: Penaliza documentos de tamaños muy distintos,
-//!    ya que un texto de 5 palabras siempre tendrá "similitud" con uno de 5000.
+//! 3. **Length ratio (10%)**: Penalizes documents of very different sizes,
+//!    since a 5-word text will always share "similarity" with a 5000-word one.
 //!
-//! El resultado final es un porcentaje del 0% al 100% que refleja qué tan parecidos
-//! son dos documentos en **contenido real**, no solo palabras sueltas.
+//! The final result is a percentage from 0% to 100% reflecting how similar
+//! two documents are in **real content**, not just isolated words.
 
 use std::collections::HashSet;
 use std::fs;
@@ -26,35 +26,35 @@ use std::path::Path;
 use crate::models::FileInfo;
 
 // ─────────────────────────────────────────────────────────────
-// ESTRUCTURAS DE DATOS
+// DATA STRUCTURES
 // ─────────────────────────────────────────────────────────────
 
-/// Contiene el resultado de comparar dos documentos por su contenido.
+/// Contains the result of comparing two documents by their content.
 #[derive(Debug, Clone)]
 pub struct SimilarityMatch {
-    /// Archivo que fue usado como referencia base en la comparación.
-    /// Se guarda para permitir futuras extensiones (reportes, exportación, etc.)
+    /// The file used as the base reference in the comparison.
+    /// Stored to support future extensions (report export, etc.).
     #[allow(dead_code)]
     pub target_file: FileInfo,
     pub candidate_file: FileInfo,
-    /// Porcentaje de similitud compuesto (0.0 a 100.0).
+    /// Composite similarity percentage (0.0 to 100.0).
     pub similarity_percentage: f64,
-    /// Número de palabras clave únicas que ambos documentos comparten.
+    /// Number of unique keywords both documents share.
     pub shared_keyword_count: usize,
-    /// Número de bigramas (pares de palabras) que ambos comparten.
+    /// Number of bigrams (word pairs) both documents share.
     pub shared_bigram_count: usize,
 }
 
 // ─────────────────────────────────────────────────────────────
-// EXTRACCIÓN DE TEXTO
+// TEXT EXTRACTION
 // ─────────────────────────────────────────────────────────────
 
-/// Extrae el contenido de texto de un archivo según su tipo.
+/// Extracts text content from a file based on its type.
 ///
-/// - **PDF**: usa la librería `pdf-extract` para parsear el contenido interno.
-/// - **Cualquier otro formato de texto** (txt, md, rs, json, etc.): lectura directa.
+/// - **PDF**: uses the `pdf-extract` crate to parse internal content.
+/// - **Any other text format** (txt, md, rs, json, etc.): direct read.
 ///
-/// Retorna `None` si el archivo no se puede leer o está vacío.
+/// Returns `None` if the file cannot be read or is empty.
 pub fn extract_text_from_file(path: &Path) -> Option<String> {
     let extension = path
         .extension()
@@ -70,22 +70,22 @@ pub fn extract_text_from_file(path: &Path) -> Option<String> {
 }
 
 // ─────────────────────────────────────────────────────────────
-// PROCESAMIENTO DE TEXTO
+// TEXT PROCESSING
 // ─────────────────────────────────────────────────────────────
 
-/// Lista de palabras comunes (stopwords) en español e inglés que no aportan
-/// significado temático y se deben excluir del análisis.
+/// Common words (stopwords) in Spanish and English that carry no thematic
+/// meaning and should be excluded from the analysis.
 ///
-/// Esto mejora la precisión: si dos documentos comparten "de", "el", "la", "the",
-/// eso no los hace similares en contenido.
+/// This improves accuracy: if two documents share "de", "el", "la", "the",
+/// that does not make them similar in content.
 const STOPWORDS: &[&str] = &[
-    // Español
+    // Spanish
     "de", "el", "la", "los", "las", "un", "una", "unos", "unas",
     "en", "con", "por", "para", "del", "al", "se", "lo", "le",
     "que", "es", "su", "son", "nos", "ha", "han", "si", "ya",
     "pero", "como", "mas", "yo", "tu", "el", "no", "a", "e",
     "o", "y", "ni", "se", "te", "me", "mi", "ti", "so",
-    // Inglés
+    // English
     "the", "a", "an", "is", "are", "was", "were", "be", "been",
     "being", "have", "has", "had", "do", "does", "did", "will",
     "would", "should", "could", "may", "might", "shall", "can",
@@ -95,16 +95,16 @@ const STOPWORDS: &[&str] = &[
     "if", "as", "up", "all", "any", "each", "both", "few", "more",
 ];
 
-/// Convierte un texto a una lista de palabras limpias y relevantes:
+/// Converts text into a list of clean, meaningful words:
 ///
-/// 1. Divide por espacios y signos de puntuación.
-/// 2. Convierte todo a minúsculas.
-/// 3. Elimina caracteres que no sean letras o números.
-/// 4. Descarta palabras de una sola letra y stopwords comunes.
+/// 1. Splits on spaces and punctuation.
+/// 2. Converts everything to lowercase.
+/// 3. Removes non-alphanumeric characters.
+/// 4. Discards single-letter words and common stopwords.
 ///
-/// Nota de rendimiento: el HashSet de stopwords se crea en cada llamada.
-/// Si en el futuro se comparan miles de archivos, considera moverlo a un
-/// `OnceLock<HashSet>` estático para construirlo solo una vez.
+/// Performance note: the stopwords HashSet is built on every call.
+/// If comparing thousands of files in the future, consider moving it to a
+/// static `OnceLock<HashSet>` so it is built only once.
 pub fn tokenize_words(text: &str) -> Vec<String> {
     let stopwords: HashSet<&str> = STOPWORDS.iter().copied().collect();
 
@@ -119,19 +119,19 @@ pub fn tokenize_words(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Genera un conjunto de n-gramas (frases de `n` palabras consecutivas)
-/// a partir de una lista de tokens.
+/// Generates a set of n-grams (phrases of `n` consecutive words)
+/// from a token list.
 ///
-/// ### Ejemplo (n=2, bigramas):
-/// `["inteligencia", "artificial", "aplicada"]`
-/// → `{"inteligencia artificial", "artificial aplicada"}`
+/// ### Example (n=2, bigrams):
+/// `["intelligence", "artificial", "applied"]`
+/// → `{"intelligence artificial", "artificial applied"}`
 ///
-/// Los bigramas permiten detectar no solo palabras compartidas,
-/// sino también si aparecen en el mismo contexto.
+/// Bigrams detect not just shared words, but whether they appear
+/// in the same context (adjacent order).
 pub fn create_shingles(words: &[String], n: usize) -> HashSet<String> {
     if words.len() < n {
-        // Si hay menos palabras que el tamaño del n-grama,
-        // usamos las palabras individuales para no quedarnos sin datos.
+        // Fewer words than the n-gram size: fall back to individual words
+        // so we don't return an empty set.
         return words.iter().cloned().collect();
     }
 
@@ -143,16 +143,16 @@ pub fn create_shingles(words: &[String], n: usize) -> HashSet<String> {
 }
 
 // ─────────────────────────────────────────────────────────────
-// CÁLCULO DE SIMILITUD
+// SIMILARITY CALCULATION
 // ─────────────────────────────────────────────────────────────
 
-/// Calcula el **Coeficiente de Jaccard** entre dos conjuntos.
+/// Calculates the **Jaccard Coefficient** between two sets.
 ///
-/// La fórmula es: `|A ∩ B| / |A ∪ B|`
-/// Es decir: elementos en común / total de elementos únicos.
+/// Formula: `|A ∩ B| / |A ∪ B|`
+/// That is: elements in common / total unique elements.
 ///
-/// Resultado: un valor entre 0.0% (nada en común) y 100.0% (idénticos).
-/// También retorna la cantidad de elementos compartidos.
+/// Result: a value between 0.0% (nothing in common) and 100.0% (identical).
+/// Also returns the count of shared elements.
 pub fn calculate_jaccard_similarity(set_a: &HashSet<String>, set_b: &HashSet<String>) -> (f64, usize) {
     if set_a.is_empty() && set_b.is_empty() {
         return (100.0, 0);
@@ -172,19 +172,18 @@ pub fn calculate_jaccard_similarity(set_a: &HashSet<String>, set_b: &HashSet<Str
     (similarity, intersection_count)
 }
 
-/// Calcula el **Score de Similitud Compuesto** entre dos documentos
-/// ya procesados (representados por sus conjuntos de palabras y bigramas).
+/// Calculates the **Composite Similarity Score** between two already-processed
+/// documents (represented by their word and bigram sets).
 ///
-/// ### Ponderación:
-/// - 50% → Similitud de vocabulario (palabras únicas compartidas)
-/// - 40% → Similitud de frases/bigramas (contexto compartido)
-/// - 10% → Penalización por diferencia de longitud extrema
+/// ### Weighting:
+/// - 50% → Vocabulary similarity (shared unique words)
+/// - 40% → Phrase/bigram similarity (shared context)
+/// - 10% → Length-difference penalty
 ///
-/// ### ¿Por qué esta combinación?
-/// La similitud solo por vocabulario puede ser engañosa: dos documentos
-/// pueden compartir palabras clave sin ser similares. Añadir bigramas
-/// requiere que las palabras aparezcan juntas, lo que indica estructura
-/// y contenido realmente compartidos.
+/// ### Why this combination?
+/// Vocabulary-only similarity can be misleading: two documents may share
+/// keywords without being truly similar. Adding bigrams requires words to
+/// appear together, which indicates genuinely shared structure and content.
 fn calculate_composite_score(
     words_a: &HashSet<String>,
     words_b: &HashSet<String>,
@@ -194,9 +193,9 @@ fn calculate_composite_score(
     let (vocab_sim, shared_words) = calculate_jaccard_similarity(words_a, words_b);
     let (bigram_sim, shared_bigrams) = calculate_jaccard_similarity(bigrams_a, bigrams_b);
 
-    // Penalización por longitud: si un documento es mucho más largo que el otro,
-    // reducimos levemente el score. Se calcula como la proporción del más corto
-    // respecto al más largo (resultado entre 0.0 y 1.0).
+    // Length penalty: if one document is much longer than the other,
+    // slightly reduce the score. Computed as the ratio of the shorter
+    // to the longer document (result between 0.0 and 1.0).
     let len_a = words_a.len() as f64;
     let len_b = words_b.len() as f64;
     let length_ratio = if len_a == 0.0 || len_b == 0.0 {
@@ -206,38 +205,38 @@ fn calculate_composite_score(
     };
     let length_penalty_score = length_ratio * 100.0;
 
-    // Ponderación final
+    // Final weighted score
     let composite = (vocab_sim * 0.50) + (bigram_sim * 0.40) + (length_penalty_score * 0.10);
 
     (composite, shared_words, shared_bigrams)
 }
 
 // ─────────────────────────────────────────────────────────────
-// FUNCIÓN PRINCIPAL DE COMPARACIÓN
+// MAIN COMPARISON FUNCTION
 // ─────────────────────────────────────────────────────────────
 
-/// Compara un documento base contra una lista de candidatos y retorna
-/// aquellos que superen el umbral mínimo de similitud.
+/// Compares a base document against a list of candidates and returns
+/// those that exceed the minimum similarity threshold.
 ///
-/// ### Proceso:
-/// 1. Extrae y tokeniza el texto del documento base.
-/// 2. Para cada candidato, extrae su texto y calcula el score compuesto.
-/// 3. Filtra los que no alcanzan el umbral y ordena los resultados.
+/// ### Process:
+/// 1. Extracts and tokenizes the text of the base document.
+/// 2. For each candidate, extracts its text and computes the composite score.
+/// 3. Filters out those below the threshold and sorts the results.
 ///
-/// ### Parámetros:
-/// - `target_file`: El documento que se usa como referencia.
-/// - `candidates`: Todos los archivos contra los cuales comparar.
-/// - `min_threshold_percentage`: Porcentaje mínimo para incluir en resultados (0-100).
+/// ### Parameters:
+/// - `target_file`: The document used as the reference.
+/// - `candidates`: All files to compare against.
+/// - `min_threshold_percentage`: Minimum percentage to include in results (0-100).
 pub fn find_similar_documents(
     target_file: &FileInfo,
     candidates: &[FileInfo],
     min_threshold_percentage: f64,
 ) -> Vec<SimilarityMatch> {
-    // Extraer y tokenizar el texto del archivo base
+    // Extract and tokenize the base file's text
     let target_text = match extract_text_from_file(&target_file.path) {
         Some(txt) if !txt.trim().is_empty() => txt,
         _ => {
-            println!("No se pudo extraer texto del archivo base. Puede estar vacio o ser binario.");
+            println!("Could not extract text from the base file. It may be empty or binary.");
             return Vec::new();
         }
     };
@@ -247,19 +246,19 @@ pub fn find_similar_documents(
     let target_bigrams = create_shingles(&target_words_vec, 2);
 
     if target_word_set.is_empty() {
-        println!("El archivo base no contiene palabras analizables tras la limpieza.");
+        println!("The base file contains no analyzable words after cleaning.");
         return Vec::new();
     }
 
     let mut matches = Vec::new();
 
     for candidate in candidates {
-        // No comparar el archivo consigo mismo
+        // Skip comparing the file against itself
         if candidate.path == target_file.path {
             continue;
         }
 
-        // Solo procesar archivos de texto o PDF
+        // Only process text or PDF files
         let ext = candidate.extension.as_deref().unwrap_or("").to_lowercase();
         let is_text_file = matches!(
             ext.as_str(),
@@ -297,7 +296,7 @@ pub fn find_similar_documents(
         }
     }
 
-    // Ordenar de mayor a menor similitud
+    // Sort from highest to lowest similarity
     matches.sort_by(|a, b| {
         b.similarity_percentage
             .partial_cmp(&a.similarity_percentage)

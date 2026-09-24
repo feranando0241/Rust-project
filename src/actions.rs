@@ -5,29 +5,29 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 use crate::models::FileInfo;
 
-/// Representa un grupo de archivos duplicados verificados.
+/// Represents a verified group of duplicate files.
 #[derive(Debug, Clone)]
 pub struct DuplicateGroup {
-    /// Hash SHA-256 compartido por todos los archivos del grupo.
-    /// Aunque no se muestra directamente en la UI, documenta el origen
-    /// del agrupamiento y es útil para futuras extensiones (exportar reporte, etc.).
+    /// SHA-256 hash shared by all files in the group.
+    /// Not displayed directly in the UI, but documents the grouping origin
+    /// and is useful for future extensions (e.g. report export).
     #[allow(dead_code)]
     pub hash: String,
     pub file_size: u64,
-    /// El archivo que se conservará (generalmente el más antiguo o el primero de la lista).
+    /// The file to keep (typically the oldest or the first in the list).
     pub original: FileInfo,
-    /// Los archivos redundantes que son candidatos a enviarse a la papelera.
+    /// The redundant files that are candidates to be sent to the Trash.
     pub duplicates: Vec<FileInfo>,
 }
 
-/// Retorna los `n` archivos más pesados de la lista, ordenados de mayor a menor tamaño.
+/// Returns the `n` heaviest files in the list, sorted from largest to smallest.
 pub fn get_top_largest(files: &[FileInfo], n: usize) -> Vec<FileInfo> {
     let mut sorted = files.to_vec();
     sorted.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
     sorted.into_iter().take(n).collect()
 }
 
-/// Filtra los archivos que coincidan con una extensión específica (ej: "pdf", "png").
+/// Filters files that match a specific extension (e.g. "pdf", "png").
 pub fn filter_by_extension(files: &[FileInfo], ext: &str) -> Vec<FileInfo> {
     let clean_ext = ext.trim().trim_start_matches('.').to_lowercase();
     files
@@ -42,11 +42,11 @@ pub fn filter_by_extension(files: &[FileInfo], ext: &str) -> Vec<FileInfo> {
         .collect()
 }
 
-/// Calcula el hash criptográfico SHA-256 del contenido de un archivo.
+/// Computes the SHA-256 cryptographic hash of a file's content.
 pub fn calculate_sha256(path: &Path) -> io::Result<String> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 8192]; // Buffer de 8 KB para lectura eficiente en chunks
+    let mut buffer = [0u8; 8192]; // 8 KB buffer for efficient chunked reading
 
     loop {
         let bytes_read = file.read(&mut buffer)?;
@@ -60,11 +60,11 @@ pub fn calculate_sha256(path: &Path) -> io::Result<String> {
     Ok(format!("{:x}", result))
 }
 
-/// Encuentra duplicados reales:
-/// 1. Primero agrupa por tamaño en bytes (filtro rápido de costo cero).
-/// 2. Para los grupos con más de 1 archivo, calcula su SHA-256 para verificar coincidencia exacta al 100%.
+/// Finds real duplicates using a two-step approach:
+/// 1. Group by file size in bytes (fast, zero-cost pre-filter).
+/// 2. For groups with more than one file, compute SHA-256 to confirm 100% match.
 pub fn find_exact_duplicates(files: &[FileInfo]) -> Vec<DuplicateGroup> {
-    // Paso 1: Agrupar por tamaño
+    // Step 1: Group by size
     let mut by_size: HashMap<u64, Vec<FileInfo>> = HashMap::new();
     for file in files {
         if file.size_bytes > 0 {
@@ -77,7 +77,7 @@ pub fn find_exact_duplicates(files: &[FileInfo]) -> Vec<DuplicateGroup> {
         .filter(|list| list.len() > 1)
         .collect();
 
-    // Paso 2: Agrupar por hash SHA-256 dentro de cada grupo de mismo tamaño
+    // Step 2: Group by SHA-256 hash within each same-size group
     let mut duplicate_groups = Vec::new();
 
     for candidates in candidate_groups {
@@ -105,7 +105,7 @@ pub fn find_exact_duplicates(files: &[FileInfo]) -> Vec<DuplicateGroup> {
         }
     }
 
-    // Ordenamos de mayor a menor desperdicio de espacio
+    // Sort from most to least wasted space
     duplicate_groups.sort_by(|a, b| {
         let wasted_a = a.file_size * a.duplicates.len() as u64;
         let wasted_b = b.file_size * b.duplicates.len() as u64;
@@ -115,7 +115,7 @@ pub fn find_exact_duplicates(files: &[FileInfo]) -> Vec<DuplicateGroup> {
     duplicate_groups
 }
 
-/// Mueve una lista de archivos a la Papelera de reciclaje del sistema operativo de forma segura.
+/// Safely moves a list of files to the operating system Trash.
 pub fn send_files_to_trash(files: &[FileInfo]) -> Result<usize, String> {
     let mut deleted_count = 0;
 
@@ -126,7 +126,7 @@ pub fn send_files_to_trash(files: &[FileInfo]) -> Result<usize, String> {
             }
             Err(err) => {
                 return Err(format!(
-                    "Error al mover '{}' a la papelera: {}",
+                    "Error moving '{}' to Trash: {}",
                     file.name(),
                     err
                 ));
@@ -137,31 +137,31 @@ pub fn send_files_to_trash(files: &[FileInfo]) -> Result<usize, String> {
     Ok(deleted_count)
 }
 
-/// Representa un grupo de archivos que comparten el mismo nombre de archivo.
+/// Represents a group of files that share the same filename.
 #[derive(Debug, Clone)]
 pub struct SameNameGroup {
-    /// El nombre base compartido por todos los archivos del grupo (sin extensión, normalizado).
+    /// The shared base name of all files in the group (normalized, case-insensitive).
     pub shared_name: String,
-    /// Todos los archivos que tienen ese nombre, en distintas ubicaciones.
+    /// All files that have that name, in different locations.
     pub files: Vec<FileInfo>,
 }
 
-/// Busca archivos que tengan el mismo nombre (sin importar su ubicación ni contenido).
+/// Finds files that share the same name (regardless of location or content).
 ///
-/// ### ¿Cómo funciona?
-/// 1. Agrupa todos los archivos por su nombre completo (con extensión), normalizado a minúsculas.
-/// 2. Retorna solo los grupos con 2 o más archivos, ordenados de mayor a menor cantidad de coincidencias.
+/// ### How it works:
+/// 1. Groups all files by their full name (with extension), normalized to lowercase.
+/// 2. Returns only groups with 2 or more files, sorted by number of matches descending.
 ///
-/// ### Diferencia con duplicados exactos:
-/// - **Duplicados exactos** (opción 4): mismo contenido verificado por hash SHA-256.
-/// - **Mismo nombre** (esta función): mismo nombre de archivo, pueden tener contenido diferente.
+/// ### Difference from exact duplicates:
+/// - **Exact duplicates** (option 4): same content verified by SHA-256 hash.
+/// - **Same name** (this function): same filename, content may differ.
 ///
-/// Es útil para detectar versiones distintas de un mismo archivo dispersas en múltiples carpetas.
+/// Useful for detecting different versions of the same file spread across multiple folders.
 pub fn find_same_name_files(files: &[FileInfo]) -> Vec<SameNameGroup> {
     let mut by_name: HashMap<String, Vec<FileInfo>> = HashMap::new();
 
     for file in files {
-        // Normalizamos a minúsculas para que "Tesis.pdf" y "tesis.pdf" sean considerados iguales
+        // Normalize to lowercase so "Thesis.pdf" and "thesis.pdf" are treated as equal
         let key = file.name().to_lowercase();
         by_name.entry(key).or_default().push(file.clone());
     }
@@ -172,7 +172,7 @@ pub fn find_same_name_files(files: &[FileInfo]) -> Vec<SameNameGroup> {
         .map(|(shared_name, files)| SameNameGroup { shared_name, files })
         .collect();
 
-    // Ordenar de mayor a menor cantidad de coincidencias
+    // Sort by most to least matches
     groups.sort_by(|a, b| b.files.len().cmp(&a.files.len()));
 
     groups

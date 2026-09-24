@@ -3,41 +3,41 @@ use std::io;
 use std::path::{Path, PathBuf};
 use crate::models::FileInfo;
 
-/// Lista de carpetas técnicas, de dependencias y de sistema que se ignoran por defecto.
+/// List of technical, dependency, and system folders ignored by default.
 ///
-/// Estas carpetas generan mucho "ruido" porque contienen cientos de archivos
-/// de librerías, compilados o del sistema que no son relevantes para el usuario.
+/// These folders generate a lot of "noise" because they contain hundreds of
+/// library files, build artifacts, or OS files that are not relevant to the user.
 pub const IGNORED_DIRECTORIES: &[&str] = &[
-    // Control de versiones
+    // Version control
     ".git",
-    // Compilación de Rust
+    // Rust build output
     "target",
-    // Dependencias de JavaScript/Node
+    // JavaScript/Node dependencies
     "node_modules",
-    // Caché y configuración de IDEs / editores
+    // IDE and editor cache / config
     ".cache",
     ".vscode",
     ".idea",
-    // Papelera del sistema
+    // System Trash
     ".Trash",
-    // Entornos virtuales de Python (nombres exactos más comunes)
+    // Python virtual environments (most common exact names)
     "venv",
     ".venv",
     "env",
     ".env",
     "__pycache__",
-    // Librería del sistema en macOS
+    // macOS system library
     "Library",
-    // Carpetas de build de proyectos web / Java / Python
+    // Build output folders for web / Java / Python projects
     "dist",
     "build",
     ".next",
     ".nuxt",
     "out",
-    // Gestores de paquetes de Python y Ruby
+    // Python and Ruby package managers
     "site-packages",
     ".gem",
-    // Carpetas de caché de herramientas
+    // Tool cache folders
     ".npm",
     ".yarn",
     ".pnpm-store",
@@ -47,15 +47,15 @@ pub const IGNORED_DIRECTORIES: &[&str] = &[
     ".tox",
 ];
 
-/// Lista de archivos ocultos, de sistema o binarios que se ignoran durante el escaneo.
+/// List of hidden, system, or binary files ignored during scanning.
 pub const IGNORED_FILES: &[&str] = &[
-    // Archivos de metadatos de macOS
+    // macOS metadata files
     ".DS_Store",
     ".localized",
-    // Archivos de metadatos de Windows
+    // Windows metadata files
     "Thumbs.db",
     "desktop.ini",
-    // Archivos de bloqueo de dependencias (generados automáticamente)
+    // Dependency lock files (auto-generated)
     "package-lock.json",
     "yarn.lock",
     "pnpm-lock.yaml",
@@ -63,22 +63,24 @@ pub const IGNORED_FILES: &[&str] = &[
     "poetry.lock",
 ];
 
-/// Extensiones de archivos compilados o binarios que se ignoran (sin el punto).
+/// Compiled or binary file extensions to ignore (without the leading dot).
 const IGNORED_EXTENSIONS: &[&str] = &[
-    "pyc",  // Bytecode compilado de Python
-    "pyo",  // Bytecode optimizado de Python
-    "class", // Bytecode compilado de Java
-    "o",    // Objeto compilado de C/C++
+    "pyc",   // Python compiled bytecode
+    "pyo",   // Python optimized bytecode
+    "class", // Java compiled bytecode
+    "o",     // C/C++ compiled object file
 ];
 
-/// Determina si un archivo individual debe ser ignorado.
+/// Determines whether an individual file should be ignored.
 ///
-/// Ignora archivos de la lista exacta y también los que tienen extensiones de bytecode/binario.
+/// Ignores files in the exact-match list and those with bytecode/binary extensions.
+/// Note: `rsplit('.')` returns the file name itself when there is no dot, so
+/// single-extension-less files are safely handled without false positives.
 pub fn should_ignore_file(file_name: &str) -> bool {
     if IGNORED_FILES.contains(&file_name) {
         return true;
     }
-    // Ignorar por extensión (bytecode y compilados)
+    // Ignore by extension (bytecode and compiled files)
     if let Some(ext) = file_name.rsplit('.').next() {
         if IGNORED_EXTENSIONS.contains(&ext) {
             return true;
@@ -87,31 +89,31 @@ pub fn should_ignore_file(file_name: &str) -> bool {
     false
 }
 
-/// Determina si un nombre de directorio debe ser ignorado durante el escaneo.
+/// Determines whether a directory name should be ignored during scanning.
 ///
-/// Ignora las carpetas de la lista explícita, todas las carpetas ocultas (`.algo`),
-/// las que terminan en `_venv` o `-env` (variantes de entornos Python),
-/// y los paquetes de aplicaciones de macOS (`.app`).
+/// Ignores directories in the explicit list, all hidden folders (`.something`),
+/// those ending in `_venv` or `-env` (Python virtual environment variants),
+/// and macOS application bundles (`.app`, `.framework`, `.bundle`).
 pub fn should_ignore_directory(dir_name: &str) -> bool {
     if IGNORED_DIRECTORIES.contains(&dir_name) {
         return true;
     }
-    // Carpetas ocultas del sistema (empiezan con punto), excepto "." que es el directorio actual
+    // Hidden system folders (start with a dot), except "." which is the current directory
     if dir_name.starts_with('.') && dir_name != "." {
         return true;
     }
-    // Variantes de entornos virtuales de Python: proyecto_venv, mi-env, report_venv, etc.
+    // Python virtual environment variants: project_venv, my-env, report_venv, etc.
     if dir_name.ends_with("_venv") || dir_name.ends_with("-venv") || dir_name.ends_with("-env") {
         return true;
     }
-    // Paquetes de aplicaciones de macOS (.app, .framework, .bundle)
+    // macOS application bundles (.app, .framework, .bundle)
     if dir_name.ends_with(".app") || dir_name.ends_with(".framework") || dir_name.ends_with(".bundle") {
         return true;
     }
     false
 }
 
-/// Escanea un directorio y lista únicamente las subcarpetas inmediatas a las que se tiene acceso.
+/// Scans a directory and lists only its immediately accessible subdirectories.
 pub fn list_accessible_subdirectories(dir_path: &Path) -> io::Result<Vec<PathBuf>> {
     let mut dirs = Vec::new();
     let entries = fs::read_dir(dir_path)?;
@@ -131,19 +133,19 @@ pub fn list_accessible_subdirectories(dir_path: &Path) -> io::Result<Vec<PathBuf
     Ok(dirs)
 }
 
-/// Escanea un directorio y todas sus subcarpetas de manera recursiva.
-/// Retorna una lista con todos los archivos encontrados.
+/// Scans a directory and all its subfolders recursively.
+/// Returns a list of all files found.
 pub fn scan_directory(dir_path: &Path) -> io::Result<Vec<FileInfo>> {
     let mut files = Vec::new();
     scan_recursive(dir_path, &mut files)?;
     Ok(files)
 }
 
-/// Función auxiliar recursiva para explorar la jerarquía de carpetas.
+/// Recursive helper that traverses the folder hierarchy.
 fn scan_recursive(current_path: &Path, files: &mut Vec<FileInfo>) -> io::Result<()> {
     let entries = match fs::read_dir(current_path) {
         Ok(read_dir) => read_dir,
-        Err(_) => return Ok(()), // Si no hay permisos de lectura, saltamos en silencio
+        Err(_) => return Ok(()), // No read permission — skip silently
     };
 
     for entry in entries {

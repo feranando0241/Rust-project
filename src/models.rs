@@ -1,26 +1,26 @@
 use std::path::PathBuf;
 
-/// Representa la información esencial de un archivo en disco.
+/// Represents the essential information about a file on disk.
 #[derive(Debug, Clone)]
 pub struct FileInfo {
-    /// Ruta completa al archivo en el sistema de archivos.
+    /// Full path to the file in the file system.
     pub path: PathBuf,
-    /// Tamaño exacto del archivo en bytes.
+    /// Exact file size in bytes.
     pub size_bytes: u64,
-    /// Extensión del archivo (ej: "pdf", "png") o `None` si no tiene.
+    /// File extension (e.g. "pdf", "png"), or `None` if there is none.
     pub extension: Option<String>,
 }
 
 impl FileInfo {
-    /// Obtiene el nombre del archivo (ej: "documento.pdf") como texto.
+    /// Returns the file name (e.g. "document.pdf") as a string slice.
     pub fn name(&self) -> &str {
         self.path
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("desconocido")
+            .unwrap_or("unknown")
     }
 
-    /// Retorna la extensión en minúsculas o un texto por defecto si no tiene.
+    /// Returns the extension in lowercase, or a provided default if there is none.
     pub fn extension_or<'a>(&'a self, default: &'a str) -> &'a str {
         self.extension.as_deref().unwrap_or(default)
     }
