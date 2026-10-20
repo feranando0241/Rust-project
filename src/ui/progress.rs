@@ -4,12 +4,12 @@
 //! while a single big file is being read. It only appears on a real terminal;
 //! when output goes to a file or a pipe nothing is drawn.
 
+use crate::ui::style::dim;
 use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use crate::ui::style::dim;
 
 const FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
 const TICK: Duration = Duration::from_millis(100);
@@ -38,9 +38,18 @@ impl Spinner {
                 let mut frame = 0;
                 while !stop.load(Ordering::Relaxed) {
                     let (n, t) = (done.load(Ordering::Relaxed), total.load(Ordering::Relaxed));
-                    let count = if t > 0 { format!("{} of {} {}", n, t, unit) } else { format!("{} {}", n, unit) };
+                    let count = if t > 0 {
+                        format!("{} of {} {}", n, t, unit)
+                    } else {
+                        format!("{} {}", n, unit)
+                    };
                     // \r + "clear line" redraws in place
-                    eprint!("\r\x1b[2K{} {}  {}", FRAMES[frame % FRAMES.len()], label, dim(&count));
+                    eprint!(
+                        "\r\x1b[2K{} {}  {}",
+                        FRAMES[frame % FRAMES.len()],
+                        label,
+                        dim(&count)
+                    );
                     let _ = io::stderr().flush();
                     frame += 1;
                     thread::sleep(TICK);
@@ -50,7 +59,12 @@ impl Spinner {
             })
         });
 
-        Spinner { done, total, stop, handle }
+        Spinner {
+            done,
+            total,
+            stop,
+            handle,
+        }
     }
 
     /// Records progress; the next frame shows it. Parallel work may report out

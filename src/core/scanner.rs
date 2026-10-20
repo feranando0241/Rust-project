@@ -1,10 +1,10 @@
 //! Recursive directory scanning and the rules for which folders and files to skip.
 
+use crate::core::Progress;
+use crate::core::models::FileInfo;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use crate::core::Progress;
-use crate::core::models::FileInfo;
 
 /// List of technical, dependency, and system folders ignored by default.
 ///
@@ -110,7 +110,10 @@ pub fn should_ignore_directory(dir_name: &str) -> bool {
         return true;
     }
     // macOS application bundles (.app, .framework, .bundle)
-    if dir_name.ends_with(".app") || dir_name.ends_with(".framework") || dir_name.ends_with(".bundle") {
+    if dir_name.ends_with(".app")
+        || dir_name.ends_with(".framework")
+        || dir_name.ends_with(".bundle")
+    {
         return true;
     }
     false
@@ -146,7 +149,11 @@ pub fn scan_directory(dir_path: &Path, on_progress: Progress) -> io::Result<Vec<
 }
 
 /// Recursive helper that traverses the folder hierarchy.
-fn scan_recursive(current_path: &Path, files: &mut Vec<FileInfo>, on_progress: Progress) -> io::Result<()> {
+fn scan_recursive(
+    current_path: &Path,
+    files: &mut Vec<FileInfo>,
+    on_progress: Progress,
+) -> io::Result<()> {
     let entries = match fs::read_dir(current_path) {
         Ok(read_dir) => read_dir,
         Err(_) => return Ok(()), // No read permission — skip silently
@@ -174,17 +181,7 @@ fn scan_recursive(current_path: &Path, files: &mut Vec<FileInfo>, on_progress: P
             let Ok(metadata) = entry.metadata() else {
                 continue;
             };
-            let size_bytes = metadata.len();
-            let extension = path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|s| s.to_lowercase());
-
-            files.push(FileInfo {
-                path,
-                size_bytes,
-                extension,
-            });
+            files.push(FileInfo::from_path(path, metadata.len()));
             on_progress(files.len(), 0);
         }
     }

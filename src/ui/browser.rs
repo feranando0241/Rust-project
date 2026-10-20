@@ -1,10 +1,10 @@
 //! Interactive folder browser used to pick a folder before scanning.
 
-use std::path::PathBuf;
 use crate::core::scanner::list_accessible_subdirectories;
 use crate::ui::input::{is_one_of, read_line_from_user};
 use crate::ui::report::print_accessible_directories;
 use crate::ui::style::{error, hint, prompt};
+use std::path::PathBuf;
 
 /// Lets the user walk their folders starting from home.
 /// Returns the folder to scan, or `None` if they go back.
@@ -19,7 +19,11 @@ pub fn run_directory_browser() -> Option<PathBuf> {
         let subdirs = match list_accessible_subdirectories(&current_browser_dir) {
             Ok(dirs) => dirs,
             Err(err) => {
-                eprintln!("Could not list '{}': {}", current_browser_dir.display(), err);
+                eprintln!(
+                    "Could not list '{}': {}",
+                    current_browser_dir.display(),
+                    err
+                );
                 return None;
             }
         };

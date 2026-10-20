@@ -37,7 +37,8 @@ fn fixture(name: &str) -> PathBuf {
 /// Runs the binary with `args`, feeding `stdin` (not a terminal). The hash
 /// cache goes to a temporary folder so tests never touch the user's real cache.
 fn run(args: &[&str], stdin: &str) -> Output {
-    let cache_home = std::env::temp_dir().join(format!("oxide_clean_it_cache_{}", std::process::id()));
+    let cache_home =
+        std::env::temp_dir().join(format!("oxide_clean_it_cache_{}", std::process::id()));
     run_with_cache_home(args, stdin, &cache_home)
 }
 
@@ -51,7 +52,12 @@ fn run_with_cache_home(args: &[&str], stdin: &str, cache_home: &Path) -> Output 
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to start oxide_clean");
-    child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
     child.wait_with_output().unwrap()
 }
 
@@ -126,7 +132,8 @@ fn ext_filter_with_and_without_matches() {
 fn dupes_lists_groups_without_deleting() {
     let dir = fixture("dupes");
     let out = run(&[path_str(&dir), "--dupes"], "");
-    let both_exist = dir.join("Photos/2024/img.jpg").exists() && dir.join("Photos/backup/img.jpg").exists();
+    let both_exist =
+        dir.join("Photos/2024/img.jpg").exists() && dir.join("Photos/backup/img.jpg").exists();
     fs::remove_dir_all(&dir).unwrap();
 
     assert_eq!(out.status.code(), Some(0));
@@ -141,12 +148,16 @@ fn dupes_lists_groups_without_deleting() {
 fn trash_without_terminal_refuses_and_keeps_files() {
     let dir = fixture("trash_refuse");
     let out = run(&[path_str(&dir), "--dupes", "--trash"], "y\n");
-    let both_exist = dir.join("Photos/2024/img.jpg").exists() && dir.join("Photos/backup/img.jpg").exists();
+    let both_exist =
+        dir.join("Photos/2024/img.jpg").exists() && dir.join("Photos/backup/img.jpg").exists();
     fs::remove_dir_all(&dir).unwrap();
 
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).contains("Nothing was moved"));
-    assert!(both_exist, "without a terminal and without --yes nothing may be trashed");
+    assert!(
+        both_exist,
+        "without a terminal and without --yes nothing may be trashed"
+    );
 }
 
 #[test]
@@ -161,8 +172,14 @@ fn similar_finds_related_document_and_skips_itself() {
     assert!(text.contains("Documents similar to 'report.txt'"));
     assert!(text.contains("draft.txt"));
     let results = text.split("loosely related").nth(1).unwrap_or("");
-    assert!(!results.contains("report.txt"), "the base document must not match itself");
-    assert!(!results.contains("notes.md"), "unrelated document must not match");
+    assert!(
+        !results.contains("report.txt"),
+        "the base document must not match itself"
+    );
+    assert!(
+        !results.contains("notes.md"),
+        "unrelated document must not match"
+    );
 }
 
 #[cfg(unix)]
@@ -179,11 +196,23 @@ fn second_dupes_run_reuses_the_hash_cache() {
     fs::remove_dir_all(&cache_home).unwrap();
 
     assert!(cache_written, "first run must save the cache");
-    assert!(!stdout(&first).contains("Reused"), "nothing to reuse on the first run");
-    assert!(stdout(&second).contains("Reused"), "second run must reuse hashes");
+    assert!(
+        !stdout(&first).contains("Reused"),
+        "nothing to reuse on the first run"
+    );
+    assert!(
+        stdout(&second).contains("Reused"),
+        "second run must reuse hashes"
+    );
 
     // Same duplicate groups either way
-    let groups = |out: &Output| stdout(out).lines().filter(|l| l.contains("keep ") || l.contains("extra ")).map(String::from).collect::<Vec<_>>();
+    let groups = |out: &Output| {
+        stdout(out)
+            .lines()
+            .filter(|l| l.contains("keep ") || l.contains("extra "))
+            .map(String::from)
+            .collect::<Vec<_>>()
+    };
     assert_eq!(groups(&first), groups(&second));
 }
 

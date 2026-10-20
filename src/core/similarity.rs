@@ -1,6 +1,4 @@
-//! # similarity.rs
-//!
-//! Module for comparing document content and detecting similarities.
+//! Comparing documents by content.
 //!
 //! ## How it works
 //!
@@ -20,24 +18,24 @@
 //! The final result is a percentage from 0% to 100% reflecting how similar
 //! two documents are in **real content**, not just isolated words.
 
-use std::collections::HashSet;
-use std::fs;
-use std::path::Path;
 use crate::core::Progress;
 use crate::core::files::is_document;
 use crate::core::models::FileInfo;
+use std::collections::HashSet;
+use std::fmt;
+use std::fs;
+use std::path::Path;
 
-// ─────────────────────────────────────────────────────────────
-// DATA STRUCTURES
-// ─────────────────────────────────────────────────────────────
+/// Minimum similarity shown when the user doesn't choose one.
+pub const DEFAULT_THRESHOLD: f64 = 30.0;
+/// From this score up, documents count as very similar.
+pub const VERY_SIMILAR: f64 = 70.0;
+/// From this score up (and below `VERY_SIMILAR`), documents count as related.
+pub const RELATED: f64 = 40.0;
 
 /// Contains the result of comparing two documents by their content.
 #[derive(Debug, Clone)]
 pub struct SimilarityMatch {
-    /// The file used as the base reference in the comparison.
-    /// Stored to support future extensions (report export, etc.).
-    #[allow(dead_code)]
-    pub target_file: FileInfo,
     pub candidate_file: FileInfo,
     /// Composite similarity percentage (0.0 to 100.0).
     pub similarity_percentage: f64,
@@ -46,6 +44,30 @@ pub struct SimilarityMatch {
     /// Number of bigrams (word pairs) both documents share.
     pub shared_bigram_count: usize,
 }
+
+/// Why a base document can't be compared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimilarityError {
+    /// No text could be extracted: empty, binary, or a scanned PDF.
+    NoText,
+    /// There was text, but nothing left after removing stopwords and short words.
+    NoWords,
+}
+
+impl fmt::Display for SimilarityError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(match self {
+            SimilarityError::NoText => {
+                "Could not extract text from the base file. It may be empty or binary."
+            }
+            SimilarityError::NoWords => {
+                "The base file contains no analyzable words after cleaning."
+            }
+        })
+    }
+}
+
+impl std::error::Error for SimilarityError {}
 
 // ─────────────────────────────────────────────────────────────
 // TEXT EXTRACTION
@@ -86,6 +108,9 @@ pub fn extract_text_from_file(path: &Path) -> Option<String> {
 ///
 /// This improves accuracy: if two documents share "de", "el", "la", "the",
 /// that does not make them similar in content.
+// Kept hand-formatted, one language per block: rustfmt can't place the
+// language comments stably inside the array.
+#[rustfmt::skip]
 const STOPWORDS: &[&str] = &[
     // Spanish
     "de", "el", "la", "los", "las", "un", "una", "unos", "unas",
@@ -161,7 +186,10 @@ pub fn create_shingles(words: &[String], n: usize) -> HashSet<String> {
 ///
 /// Result: a value between 0.0% (nothing in common) and 100.0% (identical).
 /// Also returns the count of shared elements.
-pub fn calculate_jaccard_similarity(set_a: &HashSet<String>, set_b: &HashSet<String>) -> (f64, usize) {
+pub fn calculate_jaccard_similarity(
+    set_a: &HashSet<String>,
+    set_b: &HashSet<String>,
+) -> (f64, usize) {
     if set_a.is_empty() && set_b.is_empty() {
         return (100.0, 0);
     }
@@ -236,8 +264,8 @@ fn calculate_composite_score(
 /// - `candidates`: All files to compare against.
 /// - `min_threshold_percentage`: Minimum percentage to include in results (0-100).
 ///
-/// Returns `Err` with a user-facing message when the base document has no
-/// usable text (empty, binary, or a scanned PDF).
+/// Returns an error when the base document has no usable text (empty,
+/// binary, or a scanned PDF).
 ///
 /// `on_progress` gets `(read, total)` over the other documents to compare.
 pub fn find_similar_documents(
@@ -245,11 +273,11 @@ pub fn find_similar_documents(
     candidates: &[FileInfo],
     min_threshold_percentage: f64,
     on_progress: Progress,
-) -> Result<Vec<SimilarityMatch>, String> {
+) -> Result<Vec<SimilarityMatch>, SimilarityError> {
     // Extract and tokenize the base file's text
     let target_text = match extract_text_from_file(&target_file.path) {
         Some(txt) if !txt.trim().is_empty() => txt,
-        _ => return Err("Could not extract text from the base file. It may be empty or binary.".to_string()),
+        _ => return Err(SimilarityError::NoText),
     };
 
     let target_words_vec = tokenize_words(&target_text);
@@ -257,7 +285,7 @@ pub fn find_similar_documents(
     let target_bigrams = create_shingles(&target_words_vec, 2);
 
     if target_word_set.is_empty() {
-        return Err("The base file contains no analyzable words after cleaning.".to_string());
+        return Err(SimilarityError::NoWords);
     }
 
     let mut matches = Vec::new();
@@ -289,7 +317,6 @@ pub fn find_similar_documents(
 
             if similarity >= min_threshold_percentage {
                 matches.push(SimilarityMatch {
-                    target_file: target_file.clone(),
                     candidate_file: (*candidate).clone(),
                     similarity_percentage: similarity,
                     shared_keyword_count: shared_words,

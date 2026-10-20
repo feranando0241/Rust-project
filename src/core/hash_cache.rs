@@ -12,6 +12,7 @@
 //! Deleting files never trusts this cache. `duplicates::trash_duplicates` takes
 //! no cache and re-reads every file from disk before moving anything.
 
+use crate::core::models::FileId;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs;
@@ -34,13 +35,6 @@ pub enum HashKind {
     Prefix,
     /// SHA-256 of the whole file.
     Full,
-}
-
-/// Where a file's data lives: the same for every path (hardlink) to it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct FileId {
-    dev: u64,
-    ino: u64,
 }
 
 /// State of a file when it was hashed. Any change invalidates its hashes.
@@ -69,14 +63,25 @@ pub struct HashCache {
 impl HashCache {
     /// A cache that stores nothing: every hash is computed (`--no-cache`).
     pub fn disabled() -> HashCache {
-        HashCache { enabled: false, entries: Mutex::new(HashMap::new()), hits: AtomicUsize::new(0) }
+        HashCache {
+            enabled: false,
+            entries: Mutex::new(HashMap::new()),
+            hits: AtomicUsize::new(0),
+        }
     }
 
     /// Loads the cache from `file`. A missing, unreadable, corrupt or
     /// old-format file gives an empty cache instead of an error.
     pub fn load(file: &Path) -> HashCache {
-        let entries = fs::read_to_string(file).ok().and_then(|text| parse(&text)).unwrap_or_default();
-        HashCache { enabled: true, entries: Mutex::new(entries), hits: AtomicUsize::new(0) }
+        let entries = fs::read_to_string(file)
+            .ok()
+            .and_then(|text| parse(&text))
+            .unwrap_or_default();
+        HashCache {
+            enabled: true,
+            entries: Mutex::new(entries),
+            hits: AtomicUsize::new(0),
+        }
     }
 
     /// Returns the cached hash of `path` if the file is unchanged since it was
@@ -177,7 +182,12 @@ impl HashCache {
         });
         // Same inode but the file changed (or the inode was reused): start over
         if entry.fingerprint != fingerprint {
-            *entry = Entry { fingerprint, last_used_day: today(), prefix: None, full: None };
+            *entry = Entry {
+                fingerprint,
+                last_used_day: today(),
+                prefix: None,
+                full: None,
+            };
         }
         entry.last_used_day = today();
         match kind {
@@ -197,7 +207,10 @@ impl HashCache {
 
 /// Days since the Unix epoch (granularity is all the idle-pruning needs).
 fn today() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() / 86_400).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() / 86_400)
+        .unwrap_or(0)
 }
 
 #[cfg(unix)]
@@ -205,7 +218,7 @@ fn stat(path: &Path) -> io::Result<(FileId, Fingerprint)> {
     use std::os::unix::fs::MetadataExt;
     let m = fs::metadata(path)?;
     Ok((
-        FileId { dev: m.dev(), ino: m.ino() },
+        FileId::from_metadata(&m),
         Fingerprint {
             size: m.size(),
             mtime: (m.mtime(), m.mtime_nsec()),
@@ -218,7 +231,10 @@ fn stat(path: &Path) -> io::Result<(FileId, Fingerprint)> {
 // is computed. Add Windows file IDs if Windows support matters.
 #[cfg(not(unix))]
 fn stat(_path: &Path) -> io::Result<(FileId, Fingerprint)> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "no stable file identity"))
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "no stable file identity",
+    ))
 }
 
 /// Parses the cache file. Any malformed line rejects the whole file: a
@@ -239,13 +255,19 @@ fn parse(text: &str) -> Option<HashMap<FileId, Entry>> {
             match s {
                 "-" => Some(None),
                 // A SHA-256 written by us: exactly 64 lowercase hex digits
-                h if h.len() == 64 && h.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) => {
+                h if h.len() == 64
+                    && h.bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) =>
+                {
                     Some(Some(h.to_string()))
                 }
                 _ => None,
             }
         };
-        let id = FileId { dev: f[0].parse().ok()?, ino: f[1].parse().ok()? };
+        let id = FileId {
+            dev: f[0].parse().ok()?,
+            ino: f[1].parse().ok()?,
+        };
         let fingerprint = Fingerprint {
             size: f[2].parse().ok()?,
             mtime: (f[3].parse().ok()?, f[4].parse().ok()?),
@@ -267,16 +289,9 @@ fn parse(text: &str) -> Option<HashMap<FileId, Entry>> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+    use crate::core::test_support::temp_dir;
     use std::fs::File;
-    use std::path::PathBuf;
     use std::time::Duration;
-
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("oxide_clean_cache_{}_{}", name, std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
 
     /// A stand-in hash function that records how often it was called.
     fn counting_hash(calls: &AtomicUsize) -> impl Fn(&Path) -> io::Result<String> + '_ {
@@ -288,18 +303,22 @@ mod tests {
 
     #[test]
     fn test_unchanged_file_is_reused_across_runs() {
-        let dir = temp_dir("reuse");
+        let dir = temp_dir("cache_reuse");
         let file = dir.join("a.txt");
         let cache_file = dir.join("cache.tsv");
         fs::write(&file, "hello").unwrap();
         let calls = AtomicUsize::new(0);
 
         let first = HashCache::load(&cache_file);
-        let h1 = first.get_or_compute(&file, HashKind::Full, counting_hash(&calls)).unwrap();
+        let h1 = first
+            .get_or_compute(&file, HashKind::Full, counting_hash(&calls))
+            .unwrap();
         first.save(&cache_file).unwrap();
 
         let second = HashCache::load(&cache_file);
-        let h2 = second.get_or_compute(&file, HashKind::Full, counting_hash(&calls)).unwrap();
+        let h2 = second
+            .get_or_compute(&file, HashKind::Full, counting_hash(&calls))
+            .unwrap();
         fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(h1, h2);
@@ -310,31 +329,47 @@ mod tests {
     #[test]
     fn test_changed_content_with_restored_mtime_is_rehashed() {
         // Simulates `cp -p` / `rsync -t`: new content, same size, old mtime.
-        let dir = temp_dir("restored_mtime");
+        let dir = temp_dir("cache_restored_mtime");
         let file = dir.join("a.txt");
         fs::write(&file, "AAAA").unwrap();
         let mtime = fs::metadata(&file).unwrap().modified().unwrap();
 
         let cache = HashCache::load(&dir.join("cache.tsv"));
         let real_hash = |p: &Path| fs::read_to_string(p);
-        let before = cache.get_or_compute(&file, HashKind::Full, real_hash).unwrap();
+        let before = cache
+            .get_or_compute(&file, HashKind::Full, real_hash)
+            .unwrap();
 
         std::thread::sleep(Duration::from_millis(10));
         fs::write(&file, "BBBB").unwrap();
-        File::options().write(true).open(&file).unwrap().set_modified(mtime).unwrap();
-        assert_eq!(fs::metadata(&file).unwrap().modified().unwrap(), mtime, "mtime restored");
+        File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+        assert_eq!(
+            fs::metadata(&file).unwrap().modified().unwrap(),
+            mtime,
+            "mtime restored"
+        );
 
-        let after = cache.get_or_compute(&file, HashKind::Full, real_hash).unwrap();
+        let after = cache
+            .get_or_compute(&file, HashKind::Full, real_hash)
+            .unwrap();
         fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(before, "AAAA");
-        assert_eq!(after, "BBBB", "ctime changed, so the old hash must not be reused");
+        assert_eq!(
+            after, "BBBB",
+            "ctime changed, so the old hash must not be reused"
+        );
         assert_eq!(cache.hits(), 0);
     }
 
     #[test]
     fn test_corrupt_or_foreign_cache_is_ignored() {
-        let dir = temp_dir("corrupt");
+        let dir = temp_dir("cache_corrupt");
         let cache_file = dir.join("cache.tsv");
         let file = dir.join("a.txt");
         fs::write(&file, "data").unwrap();
@@ -349,23 +384,34 @@ mod tests {
             fs::write(&cache_file, content).unwrap();
             let calls = AtomicUsize::new(0);
             let cache = HashCache::load(&cache_file);
-            cache.get_or_compute(&file, HashKind::Full, counting_hash(&calls)).unwrap();
-            assert_eq!(calls.into_inner(), 1, "bad cache must be treated as empty: {:?}", content);
+            cache
+                .get_or_compute(&file, HashKind::Full, counting_hash(&calls))
+                .unwrap();
+            assert_eq!(
+                calls.into_inner(),
+                1,
+                "bad cache must be treated as empty: {:?}",
+                content
+            );
         }
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn test_disabled_cache_never_stores_or_saves() {
-        let dir = temp_dir("disabled");
+        let dir = temp_dir("cache_disabled");
         let file = dir.join("a.txt");
         let cache_file = dir.join("cache.tsv");
         fs::write(&file, "x").unwrap();
         let calls = AtomicUsize::new(0);
 
         let cache = HashCache::disabled();
-        cache.get_or_compute(&file, HashKind::Full, counting_hash(&calls)).unwrap();
-        cache.get_or_compute(&file, HashKind::Full, counting_hash(&calls)).unwrap();
+        cache
+            .get_or_compute(&file, HashKind::Full, counting_hash(&calls))
+            .unwrap();
+        cache
+            .get_or_compute(&file, HashKind::Full, counting_hash(&calls))
+            .unwrap();
         cache.save(&cache_file).unwrap();
         let saved = cache_file.exists();
         fs::remove_dir_all(&dir).unwrap();

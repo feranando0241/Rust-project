@@ -21,12 +21,17 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting (run `cargo fmt` to fix)
+        run: cargo fmt --check
 
       - name: Lint (warnings are errors)
         run: cargo clippy --all-targets -- -D warnings
 
-      - name: Unit and end-to-end tests
+      # Includes tests/architecture.rs: core never imports ui/app or prints,
+      # and no source file grows past 500 lines.
+      - name: Unit, property, end-to-end and architecture tests
         run: cargo test

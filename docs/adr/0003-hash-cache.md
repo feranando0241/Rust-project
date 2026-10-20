@@ -47,7 +47,7 @@ Keep a persistent cache of each file's 4 KB prefix hash and full hash.
 **Easier:** repeat scans are close to instant.
 
 **Harder:**
-- Deleting now re-reads every extra copy as well as the kept file. That is slower to move many large files, but it's the price of never trusting the cache with a deletion.
+- Deleting now re-reads every extra copy as well as the kept file. That is slower to move many large files, but it's the price of never trusting the cache with a deletion. To limit the cost, it shows a progress spinner, and each group's files are re-read in parallel and acted on right away. Verifying everything up front would widen the window in which a file could change between its check and its move.
 - The cache is Unix-only. Elsewhere every hash is computed, which is correct, just slower.
 
 **Revisit if:** the cache file grows past a few MB (one entry per same-size candidate file, about 140 bytes each), or Windows support is needed.

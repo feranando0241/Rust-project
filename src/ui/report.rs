@@ -1,16 +1,17 @@
 //! Result screens: everything the app prints after a scan or an action.
 
-use std::cmp::Reverse;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use crate::core::duplicates::{DuplicateGroup, TrashReport};
-use crate::core::files::{group_by_folder, SameNameGroup};
+use crate::core::duplicates::DuplicateGroup;
+use crate::core::files::{
+    SameNameGroup, Usage, group_by_folder, usage_by_extension, usage_by_top_folder,
+};
 use crate::core::models::FileInfo;
-use crate::core::similarity::SimilarityMatch;
+use crate::core::similarity::{RELATED, SimilarityMatch, VERY_SIMILAR};
+use crate::core::trash::{SkipReason, TrashReport};
 use crate::ui::style::{
     bar, bold, dim, folder_of, format_size, green, header, hint, plural, red, relative, rule,
     truncate, yellow,
 };
+use std::path::{Path, PathBuf};
 
 /// Max characters shown for a file name in table columns.
 const NAME_W: usize = 34;
@@ -35,50 +36,42 @@ pub fn print_summary(root: &Path, files: &[FileInfo]) {
         bold(&format_size(total_size))
     );
 
-    // Size per top-level subfolder (recursive), plus loose files in the root
-    let mut by_folder: HashMap<String, (u64, usize)> = HashMap::new();
-    for file in files {
-        let mut parts = file.path.strip_prefix(root).unwrap_or(&file.path).components();
-        let first = parts.next();
-        let key = match (first, parts.next()) {
-            (Some(dir), Some(_)) => format!("./{}", dir.as_os_str().to_string_lossy()),
-            _ => "(directly in this folder)".to_string(),
-        };
-        let entry = by_folder.entry(key).or_default();
-        entry.0 += file.size_bytes;
-        entry.1 += 1;
-    }
+    let by_folder: Vec<(String, Usage)> = usage_by_top_folder(root, files)
+        .into_iter()
+        .map(|(folder, usage)| {
+            let label = folder.map_or("(directly in this folder)".to_string(), |f| {
+                format!("./{}", f)
+            });
+            (label, usage)
+        })
+        .collect();
+    let by_type: Vec<(String, Usage)> = usage_by_extension(files)
+        .into_iter()
+        .map(|(ext, usage)| (ext.unwrap_or_else(|| "no ext".to_string()), usage))
+        .collect();
 
-    // Size per extension
-    let mut by_type: HashMap<String, (u64, usize)> = HashMap::new();
-    for file in files {
-        let entry = by_type.entry(file.extension_or("no ext").to_string()).or_default();
-        entry.0 += file.size_bytes;
-        entry.1 += 1;
-    }
-
-    print_ranking("Where the space goes, by folder", by_folder, total_size);
-    print_ranking("Where the space goes, by file type", by_type, total_size);
+    print_ranking("Where the space goes, by folder", &by_folder, total_size);
+    print_ranking("Where the space goes, by file type", &by_type, total_size);
     println!();
 }
 
-/// Prints the top entries of a (name → size, count) map with share-of-total bars.
-fn print_ranking(title: &str, map: HashMap<String, (u64, usize)>, total_size: u64) {
-    let mut rows: Vec<_> = map.into_iter().collect();
-    rows.sort_by_key(|(_, (size, _))| Reverse(*size));
-
+/// Prints the top rows (already sorted, most space first) with share-of-total bars.
+fn print_ranking(title: &str, rows: &[(String, Usage)], total_size: u64) {
     println!("\n  {}", bold(title));
-    for (name, (size, count)) in rows.iter().take(SUMMARY_ROWS) {
+    for (name, usage) in rows.iter().take(SUMMARY_ROWS) {
         println!(
             "  {:<30} {:>10}  {}  {}",
             truncate(name, 30),
-            format_size(*size),
-            bar(*size as f64, total_size as f64, 12),
-            dim(&plural(*count, "file", "files"))
+            format_size(usage.bytes),
+            bar(usage.bytes as f64, total_size as f64, 12),
+            dim(&plural(usage.files, "file", "files"))
         );
     }
     if rows.len() > SUMMARY_ROWS {
-        println!("  {}", dim(&format!("… and {} more", rows.len() - SUMMARY_ROWS)));
+        println!(
+            "  {}",
+            dim(&format!("… and {} more", rows.len() - SUMMARY_ROWS))
+        );
     }
 }
 
@@ -91,7 +84,10 @@ pub fn print_tree(root: &Path, files: &[FileInfo]) {
     let total_size: u64 = files.iter().map(|f| f.size_bytes).sum();
     let grouped = group_by_folder(files);
 
-    header(&format!("All files in {}, folder by folder", root.display()));
+    header(&format!(
+        "All files in {}, folder by folder",
+        root.display()
+    ));
 
     for (folder, folder_files) in &grouped {
         let folder_size: u64 = folder_files.iter().map(|f| f.size_bytes).sum();
@@ -107,7 +103,11 @@ pub fn print_tree(root: &Path, files: &[FileInfo]) {
         );
 
         for (index, file) in folder_files.iter().enumerate() {
-            let branch = if index == folder_files.len() - 1 { "└─" } else { "├─" };
+            let branch = if index == folder_files.len() - 1 {
+                "└─"
+            } else {
+                "├─"
+            };
             println!(
                 "  {} {:<NAME_W$} {:>10}  {}",
                 dim(branch),
@@ -131,7 +131,13 @@ pub fn print_tree(root: &Path, files: &[FileInfo]) {
 /// Displays the top largest files table.
 pub fn print_top_largest(root: &Path, files: &[FileInfo]) {
     header(&format!("The {} biggest files", files.len()));
-    println!("{}", dim(&format!("{:<4} {:<NAME_W$} {:>10}  {}", "#", "NAME", "SIZE", "FOLDER")));
+    println!(
+        "{}",
+        dim(&format!(
+            "{:<4} {:<NAME_W$} {:>10}  {}",
+            "#", "NAME", "SIZE", "FOLDER"
+        ))
+    );
 
     for (i, file) in files.iter().enumerate() {
         println!(
@@ -149,7 +155,10 @@ pub fn print_top_largest(root: &Path, files: &[FileInfo]) {
 pub fn print_filtered_files(root: &Path, ext: &str, files: &[FileInfo]) {
     let total_size: u64 = files.iter().map(|f| f.size_bytes).sum();
     header(&format!(".{} files: {} found", ext, files.len()));
-    println!("{}", dim(&format!("{:<NAME_W$} {:>10}  {}", "NAME", "SIZE", "FOLDER")));
+    println!(
+        "{}",
+        dim(&format!("{:<NAME_W$} {:>10}  {}", "NAME", "SIZE", "FOLDER"))
+    );
 
     for file in files {
         println!(
@@ -160,7 +169,11 @@ pub fn print_filtered_files(root: &Path, ext: &str, files: &[FileInfo]) {
         );
     }
     rule();
-    println!("Total space used by .{}: {}\n", ext, bold(&format_size(total_size)));
+    println!(
+        "Total space used by .{}: {}\n",
+        ext,
+        bold(&format_size(total_size))
+    );
 }
 
 /// Displays exact duplicates verified by hash and the recoverable space.
@@ -178,9 +191,9 @@ pub fn print_exact_duplicates(root: &Path, groups: &[DuplicateGroup]) {
     hint("copy is kept; the extra copies can be moved to the Trash.");
 
     for (i, group) in groups.iter().enumerate() {
-        let wasted_in_group = group.file_size * group.duplicates.len() as u64;
+        let wasted_in_group = group.file_size * group.extra_copies as u64;
         total_wasted += wasted_in_group;
-        total_dupe_files += group.duplicates.len();
+        total_dupe_files += group.extra_copies;
 
         println!(
             "\n{}  {}",
@@ -192,7 +205,11 @@ pub fn print_exact_duplicates(root: &Path, groups: &[DuplicateGroup]) {
                 format_size(wasted_in_group)
             ))
         );
-        println!("  {}  {}", green("keep "), relative(&group.original.path, root));
+        println!(
+            "  {}  {}",
+            green("keep "),
+            relative(&group.original.path, root)
+        );
         for dupe in &group.duplicates {
             println!("  {}  {}", red("extra"), relative(&dupe.path, root));
         }
@@ -220,10 +237,23 @@ pub fn print_trash_report(root: &Path, report: &TrashReport) {
     }
 
     if !report.failed.is_empty() {
-        let title = format!("{} not moved:", plural(report.failed.len(), "file was", "files were"));
+        let title = format!(
+            "{} not moved:",
+            plural(report.failed.len(), "file was", "files were")
+        );
         println!("\n{}", yellow(&bold(&title)));
         for (path, reason) in &report.failed {
-            println!("  {} {}", relative(path, root), dim(&format!("— {}", reason)));
+            let why = match reason {
+                SkipReason::KeptCopyChanged(kept) => format!(
+                    "skipped: the kept copy '{}' is missing or changed since the scan",
+                    relative(kept, root)
+                ),
+                SkipReason::ChangedSinceScan => {
+                    "skipped: missing or changed since the scan".to_string()
+                }
+                SkipReason::CouldNotMove(err) => format!("could not be moved: {}", err),
+            };
+            println!("  {} {}", relative(path, root), dim(&format!("— {}", why)));
         }
     }
     println!();
@@ -252,7 +282,13 @@ pub fn print_similarity_results(
 ) {
     header(&format!("Documents similar to '{}'", target_name));
     hint(&format!("Showing matches of {:.0}% or more.", threshold));
-    hint("70%+ very similar · 40-69% related · below 40% loosely related");
+    hint(&format!(
+        "{:.0}%+ very similar · {:.0}-{:.0}% related · below {:.0}% loosely related",
+        VERY_SIMILAR,
+        RELATED,
+        VERY_SIMILAR - 1.0,
+        RELATED
+    ));
 
     if matches.is_empty() {
         println!("\nNo document is at least {:.0}% similar.", threshold);
@@ -264,8 +300,8 @@ pub fn print_similarity_results(
     for m in matches {
         let pct = format!("{:>5.1}%", m.similarity_percentage);
         let pct = match m.similarity_percentage {
-            p if p >= 70.0 => green(&bold(&pct)),
-            p if p >= 40.0 => yellow(&pct),
+            p if p >= VERY_SIMILAR => green(&bold(&pct)),
+            p if p >= RELATED => yellow(&pct),
             _ => pct,
         };
         println!(

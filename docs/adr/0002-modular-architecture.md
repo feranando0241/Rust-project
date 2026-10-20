@@ -25,7 +25,7 @@ src/
 ├── cli.rs       command-line argument parsing
 ├── app.rs       actions shared by the CLI and the menus
 ├── core/        logic only — never prints, never reads input, never imports ui
-│   ├── models.rs       FileInfo
+│   ├── models.rs       FileInfo, FileId
 │   ├── scanner.rs      directory walk + ignore rules
 │   ├── duplicates.rs   size → 4 KB prefix → full hash, hardlinks, Trash
 │   ├── files.rs        biggest, by type, same name, by folder, is_document
@@ -75,7 +75,27 @@ src/
 
 ## How to add a feature
 
-1. Put the logic in `core/` (a new module, or an existing one if it fits). Return data or `Result`, and add a unit test.
-2. Put the screen that shows the result in `ui/report.rs`.
+1. Put the logic in `core/` (a new module, or an existing one if it fits). Return data or a typed error, and add a unit test. Use `core/test_support.rs` for temp folders and the fake Trash.
+2. Put the screen that shows the result in `ui/report.rs`. Wording for the user lives in `ui`: core returns enums such as `SkipReason`, not sentences.
 3. Wire it up in `app.rs` if both the CLI and the menu use it. Otherwise wire it in `ui/menu.rs`.
 4. If it is a CLI flag, add it to `cli.rs` and to `tests/cli.rs`.
+5. Defaults (`DEFAULT_TOP`, `DEFAULT_THRESHOLD`, …) live next to the logic they configure in `core` and are imported by `cli` and `ui`. Never repeat the number.
+6. Run `cargo fmt`, `cargo clippy --all-targets -- -D warnings` and `cargo test` before pushing. CI runs the same three.
+
+## Amendment: second split and automatic enforcement (2026-10-20)
+
+After the parallel hashing, hash cache and property-testing work, the layout had drifted:
+
+- `core/duplicates.rs` reached 636 lines and did three jobs: hashing, detection and moving to the Trash.
+- File identity (device + inode) was written three times, and `FileInfo` construction twice.
+- `ui/report.rs` computed the "where the space goes" totals, which is logic living in the UI.
+- Defaults (30 %, top 10) were repeated in `cli.rs` and `ui/menu.rs`.
+- Test helpers were duplicated, and the property tests reached them through a `pub(super) mod tests` workaround.
+- Formatting didn't match `rustfmt` in 124 places.
+
+The rules were sound; nothing *checked* them. Changes:
+
+- `duplicates.rs` was split into `hashing.rs` (how a hash is computed), `duplicates.rs` (detection) and `trash.rs` (verified removal).
+- `models.rs` now owns `FileId` and `FileInfo::from_path`; `files.rs` owns `Usage` and the space totals; defaults live in `core`; test helpers live in `core/test_support.rs`.
+- `cargo fmt` was applied once. The stopword list is the only `#[rustfmt::skip]`, because rustfmt can't place the per-language comments stably.
+- **Enforcement:** `tests/architecture.rs` fails `cargo test` when `core/` imports `ui`/`app`/`cli`, when `core/` prints or reads input, or when a source file passes 500 lines. CI also runs `cargo fmt --check`. The rules now hold without anyone having to remember them.

@@ -21,7 +21,9 @@ pub fn read_line_from_user() -> String {
 
 /// Returns true if the given input matches a quit command.
 pub fn is_exit_command(input: &str) -> bool {
-    ["0", "q", "quit", "exit"].iter().any(|c| input.eq_ignore_ascii_case(c))
+    ["0", "q", "quit", "exit"]
+        .iter()
+        .any(|c| input.eq_ignore_ascii_case(c))
 }
 
 /// True if `input` is one of `options`, ignoring ASCII case.

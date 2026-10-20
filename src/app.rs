@@ -3,31 +3,84 @@
 //! same in both modes (especially the rules for moving files to the Trash)
 //! lives here, in one place.
 
-use std::fs;
-use std::io::{self, IsTerminal};
-use std::path::{Path, PathBuf};
 use crate::cli::Action;
-use crate::core::duplicates::{find_exact_duplicates, trash_duplicates};
+use crate::core::duplicates::find_exact_duplicates;
 use crate::core::files::{filter_by_extension, find_same_name_files, get_top_largest};
 use crate::core::hash_cache::HashCache;
 use crate::core::models::FileInfo;
 use crate::core::scanner::scan_directory;
-use crate::core::similarity::find_similar_documents;
+use crate::core::similarity::{SimilarityError, find_similar_documents};
+use crate::core::trash::trash_duplicates;
 use crate::ui::input::{read_line_from_user, resolve_user_path};
+use crate::ui::progress::Spinner;
 use crate::ui::report::{
     print_exact_duplicates, print_filtered_files, print_same_name_results,
     print_similarity_results, print_top_largest, print_trash_report,
 };
-use crate::ui::progress::Spinner;
 use crate::ui::style::{hint, plural, prompt};
+use std::fmt;
+use std::fs;
+use std::io::{self, IsTerminal};
+use std::path::{Path, PathBuf};
+
+/// Everything that can make an action fail. Each variant keeps the details
+/// (and the underlying error, when there is one) instead of a pre-built
+/// message, so callers can tell failures apart; `Display` gives the text.
+#[derive(Debug)]
+pub enum AppError {
+    NotADirectory(PathBuf),
+    Scan(io::Error),
+    UnreadableFile {
+        path: PathBuf,
+        source: io::Error,
+    },
+    NotAFile(PathBuf),
+    Similarity(SimilarityError),
+    /// Moving to the Trash needs a yes/no answer and there is no terminal to ask.
+    NoTerminalToConfirm,
+    /// Some files were left in place; the report lists which and why.
+    NotAllMoved(usize),
+}
+
+impl fmt::Display for AppError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            AppError::NotADirectory(path) => write!(f, "'{}' is not a directory", path.display()),
+            AppError::Scan(err) => write!(f, "scan failed: {}", err),
+            AppError::UnreadableFile { path, source } => write!(f, "cannot read '{}': {}", path.display(), source),
+            AppError::NotAFile(path) => write!(f, "'{}' is not a file", path.display()),
+            AppError::Similarity(err) => write!(f, "{}", err),
+            AppError::NoTerminalToConfirm => f.write_str(
+                "Nothing was moved: there's no terminal to ask for confirmation (pass --yes to skip it)",
+            ),
+            AppError::NotAllMoved(n) => write!(f, "{} file(s) could not be moved to the Trash", n),
+        }
+    }
+}
+
+impl std::error::Error for AppError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            AppError::Scan(err) | AppError::UnreadableFile { source: err, .. } => Some(err),
+            AppError::Similarity(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
+impl From<SimilarityError> for AppError {
+    fn from(err: SimilarityError) -> AppError {
+        AppError::Similarity(err)
+    }
+}
 
 /// Resolves a folder given on the command line, expanding `~`.
-pub fn resolve_folder(path: &str) -> Result<PathBuf, String> {
+pub fn resolve_folder(path: &str) -> Result<PathBuf, AppError> {
     let root = resolve_user_path(path);
     if root.is_dir() {
         Ok(root)
     } else {
-        Err(format!("'{}' is not a directory", root.display()))
+        Err(AppError::NotADirectory(root))
     }
 }
 
@@ -56,8 +109,8 @@ fn cache_file() -> Option<PathBuf> {
 }
 
 /// Scans `root` and runs one command-line action on it.
-pub fn run_action(root: &Path, action: Action, use_cache: bool) -> Result<(), String> {
-    let files = scan(root).map_err(|e| format!("scan failed: {}", e))?;
+pub fn run_action(root: &Path, action: Action, use_cache: bool) -> Result<(), AppError> {
+    let files = scan(root).map_err(AppError::Scan)?;
 
     match action {
         Action::Largest(n) => print_top_largest(root, &get_top_largest(&files, n)),
@@ -77,11 +130,14 @@ pub fn run_action(root: &Path, action: Action, use_cache: bool) -> Result<(), St
 /// Builds the `FileInfo` for the `--similar` base file. When the file lives
 /// inside `root`, its path is expressed the same way the scanner builds paths
 /// (root + relative part) so the comparison recognizes and skips it.
-fn locate_base_file(root: &Path, file: &str) -> Result<FileInfo, String> {
+fn locate_base_file(root: &Path, file: &str) -> Result<FileInfo, AppError> {
     let path = resolve_user_path(file);
-    let metadata = fs::metadata(&path).map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
+    let metadata = match fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(source) => return Err(AppError::UnreadableFile { path, source }),
+    };
     if !metadata.is_file() {
-        return Err(format!("'{}' is not a file", path.display()));
+        return Err(AppError::NotAFile(path));
     }
 
     let path = match (path.canonicalize(), root.canonicalize()) {
@@ -91,12 +147,7 @@ fn locate_base_file(root: &Path, file: &str) -> Result<FileInfo, String> {
         },
         _ => path,
     };
-    let extension = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|s| s.to_lowercase());
-
-    Ok(FileInfo { path, size_bytes: metadata.len(), extension })
+    Ok(FileInfo::from_path(path, metadata.len()))
 }
 
 /// Prints the files matching an extension, or a notice when there are none.
@@ -127,10 +178,12 @@ pub fn show_similar_documents(
     target: &FileInfo,
     files: &[FileInfo],
     threshold: f64,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     let matches = {
         let spinner = Spinner::start("Reading documents", "documents");
-        find_similar_documents(target, files, threshold, &|done, total| spinner.update(done, total))?
+        find_similar_documents(target, files, threshold, &|done, total| {
+            spinner.update(done, total)
+        })?
     };
     print_similarity_results(root, target.name(), &matches, threshold);
     Ok(())
@@ -150,7 +203,7 @@ pub fn handle_duplicates(
     offer_trash: bool,
     assume_yes: bool,
     use_cache: bool,
-) -> Result<(), String> {
+) -> Result<(), AppError> {
     hint("\nComparing file contents …");
     let cache_path = if use_cache { cache_file() } else { None };
     let cache = match &cache_path {
@@ -166,7 +219,11 @@ pub fn handle_duplicates(
     if let Some(path) = &cache_path
         && let Err(err) = cache.save(path)
     {
-        hint(&format!("(Couldn't save the hash cache at {}: {})", path.display(), err));
+        hint(&format!(
+            "(Couldn't save the hash cache at {}: {})",
+            path.display(),
+            err
+        ));
     }
     if cache.hits() > 0 {
         hint(&format!(
@@ -187,15 +244,11 @@ pub fn handle_duplicates(
         return Ok(());
     }
 
-    let copies: usize = duplicate_groups.iter().map(|g| g.duplicates.len()).sum();
+    let copies: usize = duplicate_groups.iter().map(|g| g.extra_copies).sum();
 
     if !assume_yes {
         if !io::stdin().is_terminal() {
-            return Err(
-                "Nothing was moved: there's no terminal to ask for confirmation \
-                 (pass --yes to skip it)"
-                    .to_string(),
-            );
+            return Err(AppError::NoTerminalToConfirm);
         }
 
         println!(
@@ -212,12 +265,17 @@ pub fn handle_duplicates(
         }
     }
 
-    let report = trash_duplicates(&duplicate_groups);
+    let report = {
+        let spinner = Spinner::start("Re-checking files before moving them", "files");
+        trash_duplicates(&duplicate_groups, &|done, total| {
+            spinner.update(done, total)
+        })
+    };
     print_trash_report(root, &report);
 
     if report.failed.is_empty() {
         Ok(())
     } else {
-        Err(format!("{} file(s) could not be moved to the Trash", report.failed.len()))
+        Err(AppError::NotAllMoved(report.failed.len()))
     }
 }

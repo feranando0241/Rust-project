@@ -1,15 +1,18 @@
 //! Interactive mode: the start screen and the action menu after a scan.
 
-use std::path::Path;
 use crate::app;
-use crate::core::files::{get_top_largest, is_document};
+use crate::core::files::{DEFAULT_TOP, get_top_largest, is_document};
 use crate::core::models::FileInfo;
 use crate::core::scanner::list_accessible_subdirectories;
+use crate::core::similarity::{DEFAULT_THRESHOLD, VERY_SIMILAR};
 use crate::ui::browser::run_directory_browser;
 use crate::ui::input::{is_exit_command, is_one_of, read_line_from_user, resolve_user_path};
 use crate::ui::picker::select_file_paginated;
-use crate::ui::report::{print_accessible_directories, print_summary, print_top_largest, print_tree};
+use crate::ui::report::{
+    print_accessible_directories, print_summary, print_top_largest, print_tree,
+};
 use crate::ui::style::{bold, dim, error, header, hint, prompt};
+use std::path::Path;
 
 /// The classic interactive mode: pick a folder, then pick actions from a menu.
 pub fn run_interactive() {
@@ -46,7 +49,10 @@ pub fn run_interactive() {
         }
 
         if !target_path.is_dir() {
-            error(&format!("That's a file, not a folder: {}", target_path.display()));
+            error(&format!(
+                "That's a file, not a folder: {}",
+                target_path.display()
+            ));
             continue;
         }
 
@@ -86,7 +92,7 @@ fn run_action_menu(target_path: &Path, files: &[FileInfo], use_cache: bool) {
             println!("\n{}", bold("What would you like to do?"));
             hint("\n  Look around");
             println!("    1  See every file, folder by folder");
-            println!("    2  See the 10 biggest files");
+            println!("    2  See the {} biggest files", DEFAULT_TOP);
             println!("    3  See only one type of file (pdf, jpg, mp4…)");
             println!("    4  List the folders inside this one");
             hint("\n  Clean up");
@@ -106,8 +112,8 @@ fn run_action_menu(target_path: &Path, files: &[FileInfo], use_cache: bool) {
                 print_tree(target_path, files);
             }
             "2" => {
-                let top_10 = get_top_largest(files, 10);
-                print_top_largest(target_path, &top_10);
+                let top = get_top_largest(files, DEFAULT_TOP);
+                print_top_largest(target_path, &top);
             }
             "3" => {
                 println!("\nWhich type of file? (e.g. pdf, jpg, mp4)");
@@ -127,8 +133,9 @@ fn run_action_menu(target_path: &Path, files: &[FileInfo], use_cache: bool) {
                 }
             }
             "5" => {
-                if let Err(err) = app::handle_duplicates(target_path, files, true, false, use_cache) {
-                    error(&err);
+                if let Err(err) = app::handle_duplicates(target_path, files, true, false, use_cache)
+                {
+                    error(&err.to_string());
                     println!();
                 }
             }
@@ -170,34 +177,44 @@ fn run_similarity_steps(root: &Path, files: &[FileInfo]) {
         None => return,
     };
 
+    /// The "anything related" option: looser than the default.
+    const LOOSE_THRESHOLD: f64 = 15.0;
+
     header("Step 2 of 2 · How similar should the matches be?");
-    println!("    1  Similar or closer (30% or more)   {}", dim("← recommended"));
-    println!("    2  Only very similar (70% or more)");
-    println!("    3  Anything related (15% or more)");
+    println!(
+        "    1  Similar or closer ({:.0}% or more)   {}",
+        DEFAULT_THRESHOLD,
+        dim("← recommended")
+    );
+    println!("    2  Only very similar ({:.0}% or more)", VERY_SIMILAR);
+    println!("    3  Anything related ({:.0}% or more)", LOOSE_THRESHOLD);
     println!("    4  Let me type a percentage");
     hint("  Press Enter for the recommended option.");
     prompt();
 
     let threshold: f64 = match read_line_from_user().as_str() {
-        "2" => 70.0,
-        "3" => 15.0,
+        "2" => VERY_SIMILAR,
+        "3" => LOOSE_THRESHOLD,
         "4" => {
             println!("Minimum percentage (0-100):");
             prompt();
             match read_line_from_user().trim_end_matches('%').parse::<f64>() {
                 Ok(value) => value.clamp(0.0, 100.0),
                 Err(_) => {
-                    hint("Not a number, using 30%.");
-                    30.0
+                    hint(&format!("Not a number, using {:.0}%.", DEFAULT_THRESHOLD));
+                    DEFAULT_THRESHOLD
                 }
             }
         }
-        _ => 30.0,
+        _ => DEFAULT_THRESHOLD,
     };
 
-    hint(&format!("\nComparing '{}' with the other documents …", selected.name()));
+    hint(&format!(
+        "\nComparing '{}' with the other documents …",
+        selected.name()
+    ));
 
     if let Err(err) = app::show_similar_documents(root, selected, files, threshold) {
-        error(&err);
+        error(&err.to_string());
     }
 }

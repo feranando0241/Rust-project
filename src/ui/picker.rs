@@ -1,9 +1,9 @@
 //! Paginated, searchable list for picking one document.
 
-use std::path::Path;
 use crate::core::models::FileInfo;
 use crate::ui::input::read_line_from_user;
 use crate::ui::style::{bold, dim, error, folder_of, hint, plural, prompt, truncate};
+use std::path::Path;
 
 /// Displays a paginated file list (20 per page) and lets the user
 /// navigate pages or search by name before selecting.
@@ -34,7 +34,15 @@ pub fn select_file_paginated<'a>(root: &Path, files: &[&'a FileInfo]) -> Option<
             plural(total, "document", "documents")
         };
         let page_info = if page_total > 1 {
-            format!(" · page {} of {}", page + 1, if search_active { page_total } else { total_pages })
+            format!(
+                " · page {} of {}",
+                page + 1,
+                if search_active {
+                    page_total
+                } else {
+                    total_pages
+                }
+            )
         } else {
             String::new()
         };
@@ -96,7 +104,10 @@ pub fn select_file_paginated<'a>(root: &Path, files: &[&'a FileInfo]) -> Option<
                     current_page = 0;
 
                     if active_list.is_empty() {
-                        error(&format!("No document name contains '{}'. Showing all again.", query));
+                        error(&format!(
+                            "No document name contains '{}'. Showing all again.",
+                            query
+                        ));
                         active_list = files.to_vec();
                         search_active = false;
                     }

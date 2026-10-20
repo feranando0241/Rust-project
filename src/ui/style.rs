@@ -1,10 +1,10 @@
 //! Terminal styling: colors, titles, prompts and small text helpers shared by
 //! every screen.
 
+use crate::core::models::FileInfo;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::OnceLock;
-use crate::core::models::FileInfo;
 
 /// Width of horizontal rules.
 const WIDTH: usize = 72;
@@ -12,9 +12,8 @@ const WIDTH: usize = 72;
 /// Colors are used only on a real terminal and when `NO_COLOR` is not set.
 fn color_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
-    })
+    *ENABLED
+        .get_or_init(|| std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none())
 }
 
 /// Wraps text in an ANSI style code. Pad text *before* styling it,
@@ -27,11 +26,21 @@ fn paint(code: &str, text: &str) -> String {
     }
 }
 
-pub fn bold(text: &str) -> String { paint("1", text) }
-pub fn dim(text: &str) -> String { paint("2", text) }
-pub fn red(text: &str) -> String { paint("31", text) }
-pub fn green(text: &str) -> String { paint("32", text) }
-pub fn yellow(text: &str) -> String { paint("33", text) }
+pub fn bold(text: &str) -> String {
+    paint("1", text)
+}
+pub fn dim(text: &str) -> String {
+    paint("2", text)
+}
+pub fn red(text: &str) -> String {
+    paint("31", text)
+}
+pub fn green(text: &str) -> String {
+    paint("32", text)
+}
+pub fn yellow(text: &str) -> String {
+    paint("33", text)
+}
 
 /// Prints a bold section title followed by a rule.
 pub fn header(title: &str) {

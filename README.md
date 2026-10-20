@@ -152,7 +152,7 @@ Option **[5]** (or `--dupes`) narrows the candidates in three steps, so most fil
 2. **Compare the first 4 KB.** Same-size files that start differently are ruled out after a tiny read.
 3. **Full SHA-256.** Only the files left are hashed in full, on up to 4 threads. Identical hashes mean byte-for-byte duplicates.
 
-Hardlinks (two paths to the same data) are not reported, since trashing one frees nothing.
+Hardlinks (several paths to the same data) count as one file. They are never reported as copies of each other, and when an extra copy has several paths, all of them are moved, because the space only comes back once every path is gone.
 
 **Hash cache.** Hashes are saved between runs (`~/Library/Caches/oxide_clean/hashes.tsv` on macOS), so scanning the same folder again skips files that haven't changed. A hash is reused only if the file's size, modification time, change time (ctime) and inode all match, which catches edits even when tools preserve the modification time. A corrupt or outdated cache is ignored, entries unused for 90 days are dropped, and `--no-cache` turns it off. See [ADR-0003](docs/adr/0003-hash-cache.md).
 
@@ -178,23 +178,36 @@ src/
 ├── cli.rs             — Command-line argument parsing
 ├── app.rs             — Actions shared by the CLI and the menus (incl. Trash rules)
 ├── core/              — Logic only: never prints, never reads input
-│   ├── models.rs      — FileInfo struct (path, size, extension)
+│   ├── models.rs      — FileInfo and FileId (identity of a file's data on disk)
 │   ├── scanner.rs     — Recursive directory scanning and ignore rules
-│   ├── duplicates.rs  — Size → 4 KB prefix → SHA-256, hardlinks, move to Trash
-│   ├── files.rs       — Biggest files, by type, same name, by folder
-│   └── similarity.rs  — Document similarity engine (Jaccard + bigrams)
+│   ├── files.rs       — Biggest files, by type, same name, where the space goes
+│   ├── hashing.rs     — Full and 4 KB prefix SHA-256, parallel hashing
+│   ├── hash_cache.rs  — Hashes saved between runs
+│   ├── duplicates.rs  — Finding identical files (size → prefix → full hash)
+│   ├── trash.rs       — Moving extra copies to the Trash, re-verified from disk
+│   ├── similarity.rs  — Document similarity engine (Jaccard + bigrams)
+│   ├── duplicates_props.rs — Property tests (random folders vs. brute force)
+│   └── test_support.rs     — Helpers shared by core's tests
 └── ui/                — Everything printed or typed
     ├── style.rs       — Colors, titles, prompts, text helpers
     ├── report.rs      — Result screens
     ├── input.rs       — Reading lines and paths
     ├── menu.rs        — Start screen and action menu
     ├── browser.rs     — Folder browser
-    └── picker.rs      — Paginated document picker
+    ├── picker.rs      — Paginated document picker
+    └── progress.rs    — Loading spinner with a live counter
 tests/
-└── cli.rs             — End-to-end tests that run the real binary
+├── cli.rs             — End-to-end tests that run the real binary
+└── architecture.rs    — Structure rules (see below)
 ```
 
-The one rule: `core/` never imports `ui/` or `app`. See [ADR-0002](docs/adr/0002-modular-architecture.md) for the reasoning and a short "how to add a feature" guide.
+**Structure rules, enforced by `cargo test` and CI** (`tests/architecture.rs`):
+
+1. `core/` never imports `ui/`, `app` or `cli`.
+2. `core/` never prints or reads input; it returns data or a typed error.
+3. No source file grows past 500 lines; split it by responsibility instead.
+
+On top of that, CI rejects unformatted code (`cargo fmt --check`) and any clippy warning. See [ADR-0002](docs/adr/0002-modular-architecture.md) for the reasoning and a short "how to add a feature" guide.
 
 ---
 
@@ -205,6 +218,7 @@ cargo test
 ```
 
 - **Unit tests** live next to the code they test (`#[cfg(test)]` in each module): ignore rules, duplicate detection (oldest kept, hardlinks, same prefix with different content, kept copy changed before trashing), file queries, similarity scoring, size formatting, exit commands and argument parsing.
+- **Property tests** in `src/core/duplicates_props.rs` build 150 random folders per run (exact copies, same-prefix-different-tail files, hardlinks, empty files, sizes around the 4 KB boundary). They check that detection matches a brute-force byte comparison with no cache, a cold cache and a warm cache. After moving the copies (to a fake Trash), they check that no content was lost, no duplicates remain and the freed space is what was promised. A failure prints the seed that reproduces it.
 - **End-to-end tests** in `tests/cli.rs` run the compiled binary against a temporary folder and check what the user sees: output and exit codes for every CLI action, the refusal to trash without a terminal, and the interactive menus.
 
 **Continuous integration:** GitHub Actions (`.github/workflows/ci.yml`) runs `cargo clippy --all-targets -- -D warnings` and `cargo test` on macOS and Linux for every push to `master` and every pull request. Any new warning fails the build.

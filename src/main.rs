@@ -32,7 +32,11 @@ fn main() -> ExitCode {
             print!("{}", cli::HELP);
             ExitCode::SUCCESS
         }
-        Ok(Command::Run { path, action, use_cache }) => {
+        Ok(Command::Run {
+            path,
+            action,
+            use_cache,
+        }) => {
             let result = app::resolve_folder(&path).and_then(|root| match action {
                 // A path with no action opens the interactive menu on it
                 None => {

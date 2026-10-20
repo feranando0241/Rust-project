@@ -3,6 +3,9 @@
 //! Hand-rolled on top of `std::env::args` to avoid a dependency while the
 //! interface is small. Move to `clap` once the ADR's revisit triggers are hit.
 
+use crate::core::files::DEFAULT_TOP;
+use crate::core::similarity::DEFAULT_THRESHOLD;
+
 /// Text printed by `--help`.
 pub const HELP: &str = "\
 OxideClean — file scanner and organizer
@@ -33,11 +36,6 @@ same folder skips unchanged files. Moving files to the Trash never relies on it.
 Colors are disabled when the output is not a terminal or NO_COLOR is set.
 ";
 
-/// Default minimum similarity percentage for `--similar`.
-const DEFAULT_THRESHOLD: f64 = 30.0;
-/// Default row count for `--largest`.
-const DEFAULT_LARGEST: usize = 10;
-
 /// A single non-interactive action requested on the command line.
 #[derive(Debug, PartialEq)]
 pub enum Action {
@@ -56,7 +54,11 @@ pub enum Command {
     Help,
     /// Scan `path`; run `action` and exit, or open the action menu when `None`.
     /// `use_cache` is false with `--no-cache`.
-    Run { path: String, action: Option<Action>, use_cache: bool },
+    Run {
+        path: String,
+        action: Option<Action>,
+        use_cache: bool,
+    },
 }
 
 /// Parses the arguments (without the program name). `Err` holds a usage error message.
@@ -82,10 +84,13 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
                 if n.is_some() {
                     iter.next();
                 }
-                Some(Action::Largest(n.unwrap_or(DEFAULT_LARGEST)))
+                Some(Action::Largest(n.unwrap_or(DEFAULT_TOP)))
             }
             "--ext" => Some(Action::Ext(take_value(&mut iter, "--ext")?)),
-            "--dupes" => Some(Action::Dupes { trash: false, assume_yes: false }),
+            "--dupes" => Some(Action::Dupes {
+                trash: false,
+                assume_yes: false,
+            }),
             "--same-name" => Some(Action::SameName),
             "--similar" => Some(Action::Similar {
                 file: take_value(&mut iter, "--similar")?,
@@ -97,7 +102,9 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
                     .parse::<f64>()
                     .ok()
                     .filter(|v| (0.0..=100.0).contains(v))
-                    .ok_or_else(|| format!("--threshold must be a number from 0 to 100, got '{}'", raw))?;
+                    .ok_or_else(|| {
+                        format!("--threshold must be a number from 0 to 100, got '{}'", raw)
+                    })?;
                 threshold = Some(value);
                 None
             }
@@ -151,7 +158,11 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
     }
 
     let path = path.ok_or("missing <PATH> to scan")?;
-    Ok(Command::Run { path, action, use_cache: !no_cache })
+    Ok(Command::Run {
+        path,
+        action,
+        use_cache: !no_cache,
+    })
 }
 
 /// Takes the value that must follow `flag`, e.g. `--ext pdf`.
@@ -175,7 +186,11 @@ mod tests {
     }
 
     fn run(path: &str, action: Option<Action>) -> Result<Command, String> {
-        Ok(Command::Run { path: path.to_string(), action, use_cache: true })
+        Ok(Command::Run {
+            path: path.to_string(),
+            action,
+            use_cache: true,
+        })
     }
 
     #[test]
@@ -186,33 +201,68 @@ mod tests {
         assert_eq!(parse(". --largest"), run(".", Some(Action::Largest(10))));
         assert_eq!(parse(". --largest 3"), run(".", Some(Action::Largest(3))));
         assert_eq!(parse("--largest 3 ."), run(".", Some(Action::Largest(3))));
-        assert_eq!(parse(". --ext pdf"), run(".", Some(Action::Ext("pdf".into()))));
+        assert_eq!(
+            parse(". --ext pdf"),
+            run(".", Some(Action::Ext("pdf".into())))
+        );
         assert_eq!(parse(". --same-name"), run(".", Some(Action::SameName)));
         assert_eq!(
             parse(". --dupes"),
-            run(".", Some(Action::Dupes { trash: false, assume_yes: false }))
+            run(
+                ".",
+                Some(Action::Dupes {
+                    trash: false,
+                    assume_yes: false
+                })
+            )
         );
         assert_eq!(
             parse(". --trash -y --dupes"),
-            run(".", Some(Action::Dupes { trash: true, assume_yes: true }))
+            run(
+                ".",
+                Some(Action::Dupes {
+                    trash: true,
+                    assume_yes: true
+                })
+            )
         );
         assert_eq!(
             parse(". --similar a.txt --threshold 55"),
-            run(".", Some(Action::Similar { file: "a.txt".into(), threshold: 55.0 }))
+            run(
+                ".",
+                Some(Action::Similar {
+                    file: "a.txt".into(),
+                    threshold: 55.0
+                })
+            )
         );
         // --no-cache works with an action, and with a bare path (menu mode)
         assert_eq!(
             parse(". --dupes --no-cache"),
             Ok(Command::Run {
                 path: ".".into(),
-                action: Some(Action::Dupes { trash: false, assume_yes: false }),
+                action: Some(Action::Dupes {
+                    trash: false,
+                    assume_yes: false
+                }),
                 use_cache: false,
             })
         );
         assert_eq!(
             parse("--no-cache ."),
-            Ok(Command::Run { path: ".".into(), action: None, use_cache: false })
+            Ok(Command::Run {
+                path: ".".into(),
+                action: None,
+                use_cache: false
+            })
         );
+    }
+
+    #[test]
+    fn test_help_shows_the_real_defaults() {
+        // HELP is a plain string, so it can't read the constants itself
+        assert!(HELP.contains(&format!("(default {})", DEFAULT_TOP)));
+        assert!(HELP.contains(&format!("(default {})", DEFAULT_THRESHOLD)));
     }
 
     #[test]

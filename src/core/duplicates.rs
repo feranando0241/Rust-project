@@ -1,65 +1,38 @@
-//! Duplicate detection (size → 4 KB prefix → full SHA-256) and moving the
-//! extra copies to the Trash with safety checks.
+//! Duplicate detection: size → 4 KB prefix → full SHA-256, so most files are
+//! never read in full. Moving the copies away lives in `trash`.
 
-use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
-use std::fs::{self, File};
-use std::io::{self, Read};
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
-use sha2::{Digest, Sha256};
 use crate::core::Progress;
 use crate::core::hash_cache::{HashCache, HashKind};
-use crate::core::models::FileInfo;
+use crate::core::hashing::{hash_in_parallel, hash_threads, prefix_hash};
+use crate::core::models::{FileId, FileInfo};
+use std::cmp::Reverse;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Represents a verified group of duplicate files.
 #[derive(Debug, Clone)]
 pub struct DuplicateGroup {
     /// SHA-256 hash shared by all files in the group.
-    /// Re-checked against the kept file right before trashing its copies.
+    /// Re-checked against every file right before trashing.
     pub hash: String,
     pub file_size: u64,
-    /// The file to keep: the oldest by modification time.
+    /// The file to keep: the oldest by modification time. Any other hardlinks
+    /// to it stay too (they are the same file).
     pub original: FileInfo,
-    /// The redundant files that are candidates to be sent to the Trash.
+    /// Every path to move to the Trash: one per extra copy, plus any other
+    /// hardlinks to those copies found in the scan. Space only comes back once
+    /// every path to a file is gone, so all of them are listed.
     pub duplicates: Vec<FileInfo>,
-}
-
-/// Computes the SHA-256 cryptographic hash of a file's content.
-pub fn calculate_sha256(path: &Path) -> io::Result<String> {
-    let mut file = File::open(path)?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 8192]; // 8 KB buffer for efficient chunked reading
-
-    loop {
-        let bytes_read = file.read(&mut buffer)?;
-        if bytes_read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..bytes_read]);
-    }
-
-    let result = hasher.finalize();
-    Ok(format!("{:x}", result))
-}
-
-/// Bytes read by `hash_prefix`: enough to tell most different files apart.
-const PREFIX_BYTES: u64 = 4096;
-
-/// SHA-256 of only the first `PREFIX_BYTES` of a file. A cheap filter: two files
-/// with different prefixes can't be identical, so they never reach the full hash.
-fn hash_prefix(path: &Path) -> io::Result<String> {
-    let mut prefix = Vec::with_capacity(PREFIX_BYTES as usize);
-    File::open(path)?.take(PREFIX_BYTES).read_to_end(&mut prefix)?;
-    Ok(format!("{:x}", Sha256::digest(&prefix)))
+    /// How many distinct extra files (not paths) the group has. Each one
+    /// frees `file_size` bytes when all of its paths are moved.
+    pub extra_copies: usize,
 }
 
 /// Finds real duplicates using a three-step approach:
 /// 1. Group by file size in bytes (fast, zero-cost pre-filter).
 /// 2. Within each size group, compare the first 4 KB of each file.
-/// 3. Confirm the remaining candidates with a full SHA-256.
+/// 3. Confirm the remaining candidates with a full SHA-256, on several threads.
 ///
 /// Hashes are looked up in `cache` first and only computed for files that
 /// changed (pass `HashCache::disabled()` to always compute them).
@@ -76,7 +49,10 @@ pub fn find_exact_duplicates(
     let mut by_size: HashMap<u64, Vec<FileInfo>> = HashMap::new();
     for file in files {
         if file.size_bytes > 0 {
-            by_size.entry(file.size_bytes).or_default().push(file.clone());
+            by_size
+                .entry(file.size_bytes)
+                .or_default()
+                .push(file.clone());
         }
     }
 
@@ -91,6 +67,8 @@ pub fn find_exact_duplicates(
 
     // Files whose size and prefix both match another file's: only these are read in full
     let mut needs_full_hash: Vec<FileInfo> = Vec::new();
+    // Extra paths (hardlinks) to a file that is already being checked
+    let mut other_links: HashMap<FileId, Vec<FileInfo>> = HashMap::new();
 
     for candidates in candidate_groups {
         let group_len = candidates.len();
@@ -99,20 +77,26 @@ pub fn find_exact_duplicates(
 
         // Step 2: cheap prefix filter, so most files are never read in full
         for file in candidates {
-            // Hardlinks share the same data on disk: trashing one frees nothing,
-            // so only the first path to each underlying file is considered.
-            if let Some(identity) = file_identity(&file.path)
+            // Hardlinks are one file with several paths: hash it once, and
+            // remember the other paths so they can be removed together.
+            if let Some(identity) = FileId::of(&file.path)
                 && !seen_identities.insert(identity)
             {
+                other_links.entry(identity).or_default().push(file);
                 continue;
             }
-            if let Ok(prefix) = cache.get_or_compute(&file.path, HashKind::Prefix, hash_prefix) {
+            if let Ok(prefix) = cache.get_or_compute(&file.path, HashKind::Prefix, prefix_hash) {
                 by_prefix.entry(prefix).or_default().push(file);
             }
         }
 
         let before = needs_full_hash.len();
-        needs_full_hash.extend(by_prefix.into_values().filter(|list| list.len() > 1).flatten());
+        needs_full_hash.extend(
+            by_prefix
+                .into_values()
+                .filter(|list| list.len() > 1)
+                .flatten(),
+        );
         // Everything else in this size group was ruled out by the steps above
         checked += group_len - (needs_full_hash.len() - before);
         on_progress(checked, total);
@@ -142,162 +126,46 @@ pub fn find_exact_duplicates(
             });
             let file_size = matching_files[0].size_bytes;
             let original = matching_files[0].clone();
-            let duplicates = matching_files[1..].to_vec();
+            let extra_copies = matching_files.len() - 1;
+            // Each extra copy goes with all of its hardlinks, or no space is freed
+            let duplicates = matching_files
+                .into_iter()
+                .skip(1)
+                .flat_map(|copy| {
+                    let links = FileId::of(&copy.path)
+                        .and_then(|id| other_links.remove(&id))
+                        .unwrap_or_default();
+                    std::iter::once(copy).chain(links)
+                })
+                .collect();
 
             duplicate_groups.push(DuplicateGroup {
                 hash,
                 file_size,
                 original,
                 duplicates,
+                extra_copies,
             });
         }
     }
 
     // Sort from most to least wasted space; ties by path so the order is stable
     duplicate_groups.sort_by_cached_key(|g| {
-        (Reverse(g.file_size * g.duplicates.len() as u64), g.original.path.clone())
+        (
+            Reverse(g.file_size * g.extra_copies as u64),
+            g.original.path.clone(),
+        )
     });
 
     duplicate_groups
-}
-
-/// Upper bound on hashing threads.
-///
-/// Measured hashing 3 GB on an Apple A18 Pro with 2 performance and 4
-/// efficiency cores and an SSD: 1 thread took 6.0 s, 2 took 3.6 s, 4 took
-/// 2.6 s, 6 took 2.2 s, and 8 were no better. A cold cache gave the same
-/// numbers, so on an SSD hashing is CPU-bound. 4 threads get most of the gain
-/// and leave cores free for the rest of the system.
-// ponytail: not measured on spinning disks, where parallel reads can be slower
-// than sequential ones; add a `--threads` flag if that ever matters.
-const MAX_HASH_THREADS: usize = 4;
-
-/// Threads used for full hashing: one per CPU core, up to `MAX_HASH_THREADS`.
-fn hash_threads() -> usize {
-    thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .min(MAX_HASH_THREADS)
-}
-
-/// Computes the full SHA-256 of every file using `threads` workers that pull
-/// the next file from a shared index. Returns `(file, hash)` pairs in no
-/// particular order; unreadable files are left out. `on_file_done` runs once
-/// per file, from whichever thread processed it.
-fn hash_in_parallel(
-    files: &[FileInfo],
-    threads: usize,
-    cache: &HashCache,
-    on_file_done: &(dyn Fn() + Sync),
-) -> Vec<(FileInfo, String)> {
-    let next = AtomicUsize::new(0);
-    let results = Mutex::new(Vec::with_capacity(files.len()));
-
-    thread::scope(|scope| {
-        for _ in 0..threads.clamp(1, files.len().max(1)) {
-            scope.spawn(|| {
-                while let Some(file) = files.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    if let Ok(hash) = cache.get_or_compute(&file.path, HashKind::Full, calculate_sha256) {
-                        results.lock().unwrap().push((file.clone(), hash));
-                    }
-                    on_file_done();
-                }
-            });
-        }
-    });
-
-    results.into_inner().unwrap()
-}
-
-/// Identifies the underlying file on disk (device + inode), so different
-/// paths to the same data (hardlinks) can be recognized.
-#[cfg(unix)]
-fn file_identity(path: &Path) -> Option<(u64, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
-}
-
-// ponytail: no hardlink detection off Unix (Windows file IDs need an unstable API);
-// add it via GetFileInformationByHandle if Windows support matters.
-#[cfg(not(unix))]
-fn file_identity(_path: &Path) -> Option<(u64, u64)> {
-    None
-}
-
-/// Outcome of moving duplicates to the Trash. Every file is attempted;
-/// one failure doesn't stop the rest.
-#[derive(Debug, Default)]
-pub struct TrashReport {
-    pub moved: usize,
-    pub freed_bytes: u64,
-    /// Files that were not moved, with the reason.
-    pub failed: Vec<(PathBuf, String)>,
-}
-
-/// Moves the redundant copies of every group to the operating system Trash.
-///
-/// Right before acting, every file is read again from disk, because files can
-/// change while the user reads the list and hashes may have come from the
-/// cache. On purpose this function has no access to the cache:
-/// - the kept file is re-hashed; if it is missing or its content changed, the
-///   whole group is skipped, so the last good copy is never trashed;
-/// - each copy is re-hashed; one that no longer matches is skipped.
-pub fn trash_duplicates(groups: &[DuplicateGroup]) -> TrashReport {
-    let mut report = TrashReport::default();
-
-    for group in groups {
-        let original_intact = calculate_sha256(&group.original.path)
-            .map(|hash| hash == group.hash)
-            .unwrap_or(false);
-        if !original_intact {
-            let reason = format!(
-                "skipped: the kept copy '{}' is missing or changed since the scan",
-                group.original.path.display()
-            );
-            for dupe in &group.duplicates {
-                report.failed.push((dupe.path.clone(), reason.clone()));
-            }
-            continue;
-        }
-
-        for dupe in &group.duplicates {
-            // Read the copy again too: its hash may have come from the cache or
-            // the file may have been edited since, and only bytes on disk count.
-            let still_identical = calculate_sha256(&dupe.path)
-                .map(|hash| hash == group.hash)
-                .unwrap_or(false);
-            if !still_identical {
-                report
-                    .failed
-                    .push((dupe.path.clone(), "skipped: missing or changed since the scan".to_string()));
-                continue;
-            }
-
-            match trash::delete(&dupe.path) {
-                Ok(()) => {
-                    report.moved += 1;
-                    report.freed_bytes += group.file_size;
-                }
-                Err(err) => report.failed.push((dupe.path.clone(), err.to_string())),
-            }
-        }
-    }
-
-    report
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::scanner::scan_directory;
-
-    /// Creates an empty, unique temp directory for a test.
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("oxide_clean_{}_{}", name, std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
+    use crate::core::test_support::{detect, temp_dir};
+    use std::fs::File;
 
     #[test]
     fn test_duplicates_keep_oldest() {
@@ -309,14 +177,50 @@ mod tests {
         fs::write(&newer, "same content").unwrap();
         fs::write(&older, "same content").unwrap();
         let old_time = SystemTime::now() - Duration::from_secs(3600);
-        File::options().write(true).open(&older).unwrap().set_modified(old_time).unwrap();
+        File::options()
+            .write(true)
+            .open(&older)
+            .unwrap()
+            .set_modified(old_time)
+            .unwrap();
 
-        let groups = find_exact_duplicates(&scan_directory(&dir, &|_, _| {}).unwrap(), &HashCache::disabled(), &|_, _| {});
+        let groups = detect(&dir);
         fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].original.path, older);
         assert_eq!(groups[0].duplicates[0].path, newer);
+    }
+
+    #[test]
+    fn test_groups_of_copies_among_same_size_files() {
+        let dir = temp_dir("groups");
+        // 5 groups of 3 identical files...
+        for group in 0..5u8 {
+            for copy in 0..3 {
+                fs::write(
+                    dir.join(format!("g{}_{}.bin", group, copy)),
+                    vec![group; 9000],
+                )
+                .unwrap();
+            }
+        }
+        // ...plus 5 same-size files that differ only at the very end
+        for distinct in 0..5u8 {
+            let mut bytes = vec![200u8; 9000];
+            bytes[8999] = distinct;
+            fs::write(dir.join(format!("d{}.bin", distinct)), bytes).unwrap();
+        }
+
+        let groups = detect(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(groups.len(), 5);
+        assert!(
+            groups
+                .iter()
+                .all(|g| g.duplicates.len() == 2 && g.extra_copies == 2)
+        );
     }
 
     #[test]
@@ -343,39 +247,6 @@ mod tests {
         assert_eq!(max_done.into_inner(), 3);
     }
 
-    #[test]
-    fn test_parallel_hashing_matches_sequential() {
-        let dir = temp_dir("parallel");
-        // Several groups of identical files plus same-size distinct ones
-        for group in 0..5u8 {
-            for copy in 0..3 {
-                fs::write(dir.join(format!("g{}_{}.bin", group, copy)), vec![group; 9000]).unwrap();
-            }
-        }
-        for distinct in 0..5u8 {
-            let mut bytes = vec![200u8; 9000];
-            bytes[8999] = distinct; // same size and prefix, different tail
-            fs::write(dir.join(format!("d{}.bin", distinct)), bytes).unwrap();
-        }
-        let files: Vec<FileInfo> = scan_directory(&dir, &|_, _| {}).unwrap();
-
-        let mut sequential = hash_in_parallel(&files, 1, &HashCache::disabled(), &|| {});
-        let mut parallel = hash_in_parallel(&files, 4, &HashCache::disabled(), &|| {});
-        let groups = find_exact_duplicates(&files, &HashCache::disabled(), &|_, _| {});
-        fs::remove_dir_all(&dir).unwrap();
-
-        // Same hashes no matter how many threads, just in a different order
-        sequential.sort_by(|a, b| a.0.path.cmp(&b.0.path));
-        parallel.sort_by(|a, b| a.0.path.cmp(&b.0.path));
-        let pairs = |v: &[(FileInfo, String)]| v.iter().map(|(f, h)| (f.path.clone(), h.clone())).collect::<Vec<_>>();
-        assert_eq!(pairs(&sequential), pairs(&parallel));
-        assert_eq!(sequential.len(), 20);
-
-        // 5 groups of 3 identical files; the 5 distinct ones form no group
-        assert_eq!(groups.len(), 5);
-        assert!(groups.iter().all(|g| g.duplicates.len() == 2));
-    }
-
     #[cfg(unix)]
     #[test]
     fn test_hardlinks_are_not_duplicates() {
@@ -383,10 +254,13 @@ mod tests {
         fs::write(dir.join("a.txt"), "same content").unwrap();
         fs::hard_link(dir.join("a.txt"), dir.join("b.txt")).unwrap();
 
-        let groups = find_exact_duplicates(&scan_directory(&dir, &|_, _| {}).unwrap(), &HashCache::disabled(), &|_, _| {});
+        let groups = detect(&dir);
         fs::remove_dir_all(&dir).unwrap();
 
-        assert!(groups.is_empty(), "hardlinks to one file must not be reported as duplicates");
+        assert!(
+            groups.is_empty(),
+            "hardlinks to one file must not be reported as duplicates"
+        );
     }
 
     #[test]
@@ -398,62 +272,9 @@ mod tests {
         fs::write(dir.join("a.bin"), format!("{}AAAA", prefix)).unwrap();
         fs::write(dir.join("b.bin"), format!("{}BBBB", prefix)).unwrap();
 
-        let groups = find_exact_duplicates(&scan_directory(&dir, &|_, _| {}).unwrap(), &HashCache::disabled(), &|_, _| {});
+        let groups = detect(&dir);
         fs::remove_dir_all(&dir).unwrap();
 
         assert!(groups.is_empty());
-    }
-
-    #[test]
-    fn test_trash_skips_group_when_kept_copy_changed() {
-        let dir = temp_dir("changed_original");
-        fs::write(dir.join("a.txt"), "same content").unwrap();
-        fs::write(dir.join("b.txt"), "same content").unwrap();
-
-        let groups = find_exact_duplicates(&scan_directory(&dir, &|_, _| {}).unwrap(), &HashCache::disabled(), &|_, _| {});
-        assert_eq!(groups.len(), 1);
-        // The kept copy is edited after the scan: its duplicate must survive
-        fs::write(&groups[0].original.path, "edited after scan").unwrap();
-
-        let report = trash_duplicates(&groups);
-        let duplicate_still_there = groups[0].duplicates[0].path.exists();
-        fs::remove_dir_all(&dir).unwrap();
-
-        assert_eq!(report.moved, 0);
-        assert_eq!(report.failed.len(), 1);
-        assert!(duplicate_still_there);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn test_poisoned_cache_cannot_cause_a_deletion() {
-        let dir = temp_dir("poisoned_cache");
-        let original = dir.join("a_original.txt");
-        let different = dir.join("b_different.txt");
-        fs::write(&original, "real content").unwrap();
-        fs::write(&different, "other conten").unwrap(); // same size, different bytes
-
-        // A corrupted or tampered cache claims both files have the same hashes
-        let cache = HashCache::load(&dir.join("no-such-cache.tsv"));
-        let real_prefix = hash_prefix(&original).unwrap();
-        let real_full = calculate_sha256(&original).unwrap();
-        for path in [&original, &different] {
-            cache.insert_for_test(path, HashKind::Prefix, &real_prefix);
-            cache.insert_for_test(path, HashKind::Full, &real_full);
-        }
-
-        // Detection trusts the cache, so it reports a false duplicate...
-        let files = scan_directory(&dir, &|_, _| {}).unwrap();
-        let groups = find_exact_duplicates(&files, &cache, &|_, _| {});
-        assert_eq!(groups.len(), 1, "the poisoned cache fooled detection");
-
-        // ...but deletion re-reads the disk and refuses to move the different file
-        let report = trash_duplicates(&groups);
-        let both_still_there = original.exists() && different.exists();
-        fs::remove_dir_all(&dir).unwrap();
-
-        assert_eq!(report.moved, 0);
-        assert_eq!(report.failed.len(), 1);
-        assert!(both_still_there, "a wrong cache must never cause a deletion");
     }
 }
