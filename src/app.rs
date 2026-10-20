@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::cli::Action;
 use crate::core::duplicates::{find_exact_duplicates, trash_duplicates};
 use crate::core::files::{filter_by_extension, find_same_name_files, get_top_largest};
+use crate::core::hash_cache::HashCache;
 use crate::core::models::FileInfo;
 use crate::core::scanner::scan_directory;
 use crate::core::similarity::find_similar_documents;
@@ -36,14 +37,34 @@ pub fn scan(root: &Path) -> io::Result<Vec<FileInfo>> {
     scan_directory(root, &|done, total| spinner.update(done, total))
 }
 
+/// Where the hash cache is stored: under `$XDG_CACHE_HOME` if set, otherwise
+/// `~/Library/Caches` on macOS (Apple's place for app caches) and `~/.cache`
+/// elsewhere. `None` if there is no home folder to put it in.
+fn cache_file() -> Option<PathBuf> {
+    let base = match std::env::var_os("XDG_CACHE_HOME") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => {
+            let home = PathBuf::from(std::env::var_os("HOME")?);
+            if cfg!(target_os = "macos") {
+                home.join("Library/Caches")
+            } else {
+                home.join(".cache")
+            }
+        }
+    };
+    Some(base.join("oxide_clean").join("hashes.tsv"))
+}
+
 /// Scans `root` and runs one command-line action on it.
-pub fn run_action(root: &Path, action: Action) -> Result<(), String> {
+pub fn run_action(root: &Path, action: Action, use_cache: bool) -> Result<(), String> {
     let files = scan(root).map_err(|e| format!("scan failed: {}", e))?;
 
     match action {
         Action::Largest(n) => print_top_largest(root, &get_top_largest(&files, n)),
         Action::Ext(ext) => show_files_by_extension(root, &files, &ext),
-        Action::Dupes { trash, assume_yes } => handle_duplicates(root, &files, trash, assume_yes)?,
+        Action::Dupes { trash, assume_yes } => {
+            handle_duplicates(root, &files, trash, assume_yes, use_cache)?
+        }
         Action::SameName => show_same_name_files(root, &files),
         Action::Similar { file, threshold } => {
             let target = locate_base_file(root, &file)?;
@@ -120,17 +141,40 @@ pub fn show_similar_documents(
 /// With `offer_trash`, the redundant copies are then moved to the Trash after
 /// a y/N confirmation, or straight away with `assume_yes`. Without a terminal
 /// to ask on and without `assume_yes`, nothing is deleted and an error is returned.
+///
+/// With `use_cache`, hashes of unchanged files are reused from earlier runs and
+/// the cache is updated afterwards. A cache that can't be saved is not an error.
 pub fn handle_duplicates(
     root: &Path,
     files: &[FileInfo],
     offer_trash: bool,
     assume_yes: bool,
+    use_cache: bool,
 ) -> Result<(), String> {
     hint("\nComparing file contents …");
+    let cache_path = if use_cache { cache_file() } else { None };
+    let cache = match &cache_path {
+        Some(path) => HashCache::load(path),
+        None => HashCache::disabled(),
+    };
+
     let duplicate_groups = {
         let spinner = Spinner::start("Comparing file contents", "files");
-        find_exact_duplicates(files, &|done, total| spinner.update(done, total))
+        find_exact_duplicates(files, &cache, &|done, total| spinner.update(done, total))
     };
+
+    if let Some(path) = &cache_path
+        && let Err(err) = cache.save(path)
+    {
+        hint(&format!("(Couldn't save the hash cache at {}: {})", path.display(), err));
+    }
+    if cache.hits() > 0 {
+        hint(&format!(
+            "Reused {} saved {} for files that haven't changed.",
+            cache.hits(),
+            if cache.hits() == 1 { "hash" } else { "hashes" }
+        ));
+    }
 
     if duplicate_groups.is_empty() {
         println!("No identical copies found. Nothing to clean up here.\n");

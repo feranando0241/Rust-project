@@ -34,11 +34,18 @@ fn fixture(name: &str) -> PathBuf {
     dir
 }
 
-/// Runs the binary with `args`, feeding `stdin` (not a terminal).
+/// Runs the binary with `args`, feeding `stdin` (not a terminal). The hash
+/// cache goes to a temporary folder so tests never touch the user's real cache.
 fn run(args: &[&str], stdin: &str) -> Output {
+    let cache_home = std::env::temp_dir().join(format!("oxide_clean_it_cache_{}", std::process::id()));
+    run_with_cache_home(args, stdin, &cache_home)
+}
+
+fn run_with_cache_home(args: &[&str], stdin: &str, cache_home: &Path) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_oxide_clean"))
         .args(args)
         .env("NO_COLOR", "1")
+        .env("XDG_CACHE_HOME", cache_home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -156,6 +163,44 @@ fn similar_finds_related_document_and_skips_itself() {
     let results = text.split("loosely related").nth(1).unwrap_or("");
     assert!(!results.contains("report.txt"), "the base document must not match itself");
     assert!(!results.contains("notes.md"), "unrelated document must not match");
+}
+
+#[cfg(unix)]
+#[test]
+fn second_dupes_run_reuses_the_hash_cache() {
+    let dir = fixture("cache_reuse");
+    let cache_home = dir.with_extension("cache");
+    let _ = fs::remove_dir_all(&cache_home);
+
+    let first = run_with_cache_home(&[path_str(&dir), "--dupes"], "", &cache_home);
+    let cache_written = cache_home.join("oxide_clean/hashes.tsv").exists();
+    let second = run_with_cache_home(&[path_str(&dir), "--dupes"], "", &cache_home);
+    fs::remove_dir_all(&dir).unwrap();
+    fs::remove_dir_all(&cache_home).unwrap();
+
+    assert!(cache_written, "first run must save the cache");
+    assert!(!stdout(&first).contains("Reused"), "nothing to reuse on the first run");
+    assert!(stdout(&second).contains("Reused"), "second run must reuse hashes");
+
+    // Same duplicate groups either way
+    let groups = |out: &Output| stdout(out).lines().filter(|l| l.contains("keep ") || l.contains("extra ")).map(String::from).collect::<Vec<_>>();
+    assert_eq!(groups(&first), groups(&second));
+}
+
+#[test]
+fn no_cache_flag_neither_reads_nor_writes_the_cache() {
+    let dir = fixture("no_cache");
+    let cache_home = dir.with_extension("cache");
+    let _ = fs::remove_dir_all(&cache_home);
+
+    let out = run_with_cache_home(&[path_str(&dir), "--dupes", "--no-cache"], "", &cache_home);
+    let cache_written = cache_home.exists();
+    fs::remove_dir_all(&dir).unwrap();
+    let _ = fs::remove_dir_all(&cache_home);
+
+    assert_eq!(out.status.code(), Some(0));
+    assert!(stdout(&out).contains("1 extra copy in 1 group"));
+    assert!(!cache_written, "--no-cache must not create a cache");
 }
 
 #[test]

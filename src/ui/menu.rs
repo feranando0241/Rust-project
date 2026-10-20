@@ -32,7 +32,7 @@ pub fn run_interactive() {
 
         if is_one_of(&user_input, &["b", "browse", "dirs", "ls"]) {
             if let Some(selected_path) = run_directory_browser() {
-                process_target_path(&selected_path);
+                process_target_path(&selected_path, true);
             }
             continue;
         }
@@ -50,12 +50,12 @@ pub fn run_interactive() {
             continue;
         }
 
-        process_target_path(&target_path);
+        process_target_path(&target_path, true);
     }
 }
 
 /// Scans the folder, shows the summary and opens the action menu.
-pub fn process_target_path(target_path: &Path) {
+pub fn process_target_path(target_path: &Path, use_cache: bool) {
     hint(&format!("\nScanning {} …", target_path.display()));
 
     match app::scan(target_path) {
@@ -65,7 +65,7 @@ pub fn process_target_path(target_path: &Path) {
         }
         Ok(files) => {
             print_summary(target_path, &files);
-            run_action_menu(target_path, &files);
+            run_action_menu(target_path, &files, use_cache);
         }
         Err(err) => {
             error(&format!("Could not scan the folder: {}", err));
@@ -74,7 +74,7 @@ pub fn process_target_path(target_path: &Path) {
 }
 
 /// Displays and runs the action sub-menu for the currently scanned folder.
-fn run_action_menu(target_path: &Path, files: &[FileInfo]) {
+fn run_action_menu(target_path: &Path, files: &[FileInfo], use_cache: bool) {
     // Full menu the first time (or on '?'); a compact reminder afterwards
     let mut show_full_menu = true;
     loop {
@@ -127,7 +127,7 @@ fn run_action_menu(target_path: &Path, files: &[FileInfo]) {
                 }
             }
             "5" => {
-                if let Err(err) = app::handle_duplicates(target_path, files, true, false) {
+                if let Err(err) = app::handle_duplicates(target_path, files, true, false, use_cache) {
                     error(&err);
                     println!();
                 }

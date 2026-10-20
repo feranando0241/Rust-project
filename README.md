@@ -146,12 +146,17 @@ Option **[7]** compares documents using a **Composite Score**:
 
 ## How duplicate detection works
 
-Option **[5]** uses a two-step approach for accuracy and speed:
+Option **[5]** (or `--dupes`) narrows the candidates in three steps, so most files are never read in full:
 
-1. **Group by file size** — files with different sizes cannot be identical (instant filter, zero I/O cost).
-2. **SHA-256 hash comparison** — only files with the same size are hashed; identical hashes mean byte-for-byte duplicates.
+1. **Group by file size.** Files with different sizes can't be identical. This needs no reading at all.
+2. **Compare the first 4 KB.** Same-size files that start differently are ruled out after a tiny read.
+3. **Full SHA-256.** Only the files left are hashed in full, on up to 4 threads. Identical hashes mean byte-for-byte duplicates.
 
-Duplicates are listed with the space that would be recovered, and you can choose to move them to the macOS Trash (recoverable).
+Hardlinks (two paths to the same data) are not reported, since trashing one frees nothing.
+
+**Hash cache.** Hashes are saved between runs (`~/Library/Caches/oxide_clean/hashes.tsv` on macOS), so scanning the same folder again skips files that haven't changed. A hash is reused only if the file's size, modification time, change time (ctime) and inode all match, which catches edits even when tools preserve the modification time. A corrupt or outdated cache is ignored, entries unused for 90 days are dropped, and `--no-cache` turns it off. See [ADR-0003](docs/adr/0003-hash-cache.md).
+
+**Moving to the Trash never trusts the cache.** Right before acting, the kept copy and every extra copy are re-read from disk. If anything changed, that file (or the whole group, if the kept copy changed) is skipped. Duplicates are listed with the space that would be recovered, and you choose whether to move them to the macOS Trash, where they can be restored.
 
 ---
 

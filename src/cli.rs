@@ -23,7 +23,12 @@ ACTIONS:
       --threshold <N>      Minimum similarity percentage (default 30)
 
 OPTIONS:
+    --no-cache             Don't reuse or save file hashes between runs
     -h, --help             Show this help
+
+File hashes are cached in ~/Library/Caches/oxide_clean (macOS) or
+~/.cache/oxide_clean, or under $XDG_CACHE_HOME if set, so a second scan of the
+same folder skips unchanged files. Moving files to the Trash never relies on it.
 
 Colors are disabled when the output is not a terminal or NO_COLOR is set.
 ";
@@ -50,7 +55,8 @@ pub enum Command {
     Interactive,
     Help,
     /// Scan `path`; run `action` and exit, or open the action menu when `None`.
-    Run { path: String, action: Option<Action> },
+    /// `use_cache` is false with `--no-cache`.
+    Run { path: String, action: Option<Action>, use_cache: bool },
 }
 
 /// Parses the arguments (without the program name). `Err` holds a usage error message.
@@ -63,6 +69,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
     let mut action: Option<Action> = None;
     let mut trash = false;
     let mut assume_yes = false;
+    let mut no_cache = false;
     let mut threshold: Option<f64> = None;
 
     let mut iter = args.iter().peekable();
@@ -100,6 +107,10 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
             }
             "--yes" | "-y" => {
                 assume_yes = true;
+                None
+            }
+            "--no-cache" => {
+                no_cache = true;
                 None
             }
             flag if flag.starts_with('-') => return Err(format!("unknown option '{}'", flag)),
@@ -140,7 +151,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
     }
 
     let path = path.ok_or("missing <PATH> to scan")?;
-    Ok(Command::Run { path, action })
+    Ok(Command::Run { path, action, use_cache: !no_cache })
 }
 
 /// Takes the value that must follow `flag`, e.g. `--ext pdf`.
@@ -164,7 +175,7 @@ mod tests {
     }
 
     fn run(path: &str, action: Option<Action>) -> Result<Command, String> {
-        Ok(Command::Run { path: path.to_string(), action })
+        Ok(Command::Run { path: path.to_string(), action, use_cache: true })
     }
 
     #[test]
@@ -188,6 +199,19 @@ mod tests {
         assert_eq!(
             parse(". --similar a.txt --threshold 55"),
             run(".", Some(Action::Similar { file: "a.txt".into(), threshold: 55.0 }))
+        );
+        // --no-cache works with an action, and with a bare path (menu mode)
+        assert_eq!(
+            parse(". --dupes --no-cache"),
+            Ok(Command::Run {
+                path: ".".into(),
+                action: Some(Action::Dupes { trash: false, assume_yes: false }),
+                use_cache: false,
+            })
+        );
+        assert_eq!(
+            parse("--no-cache ."),
+            Ok(Command::Run { path: ".".into(), action: None, use_cache: false })
         );
     }
 

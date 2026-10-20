@@ -8,6 +8,7 @@
 
 pub mod duplicates;
 pub mod files;
+pub mod hash_cache;
 pub mod models;
 pub mod scanner;
 pub mod similarity;
