@@ -1,127 +1,20 @@
-use std::collections::{BTreeMap, HashMap};
-use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use crate::actions::{DuplicateGroup, SameNameGroup, TrashReport};
-use crate::models::FileInfo;
-use crate::similarity::SimilarityMatch;
+//! Result screens: everything the app prints after a scan or an action.
 
-/// Width of horizontal rules.
-const WIDTH: usize = 72;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use crate::core::duplicates::{DuplicateGroup, TrashReport};
+use crate::core::files::{group_by_folder, SameNameGroup};
+use crate::core::models::FileInfo;
+use crate::core::similarity::SimilarityMatch;
+use crate::ui::style::{
+    bar, bold, dim, folder_of, format_size, green, header, hint, plural, red, relative, rule,
+    truncate, yellow,
+};
+
 /// Max characters shown for a file name in table columns.
 const NAME_W: usize = 34;
 /// How many rows the scan summary shows per section.
 const SUMMARY_ROWS: usize = 5;
-
-// ─────────────────────────────────────────────────────────────
-// STYLING HELPERS
-// ─────────────────────────────────────────────────────────────
-
-/// Colors are used only on a real terminal and when `NO_COLOR` is not set.
-fn color_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none()
-    })
-}
-
-/// Wraps text in an ANSI style code. Pad text *before* styling it,
-/// otherwise the escape codes break column alignment.
-fn paint(code: &str, text: &str) -> String {
-    if color_enabled() {
-        format!("\x1b[{}m{}\x1b[0m", code, text)
-    } else {
-        text.to_string()
-    }
-}
-
-pub fn bold(text: &str) -> String { paint("1", text) }
-pub fn dim(text: &str) -> String { paint("2", text) }
-fn red(text: &str) -> String { paint("31", text) }
-fn green(text: &str) -> String { paint("32", text) }
-fn yellow(text: &str) -> String { paint("33", text) }
-
-/// Prints a bold section title followed by a rule.
-pub fn header(title: &str) {
-    println!("\n{}", bold(title));
-    rule();
-}
-
-fn rule() {
-    println!("{}", dim(&"─".repeat(WIDTH)));
-}
-
-/// Prints the input marker; the answer is typed on the same line.
-pub fn prompt() {
-    print!("{} ", bold("›"));
-}
-
-/// Prints a secondary, explanatory line.
-pub fn hint(text: &str) {
-    println!("{}", dim(text));
-}
-
-/// Prints a problem the user should notice.
-pub fn error(text: &str) {
-    eprintln!("{} {}", red("✗"), text);
-}
-
-/// "1 file" / "3 files".
-pub fn plural(n: usize, singular: &str, plural: &str) -> String {
-    format!("{} {}", n, if n == 1 { singular } else { plural })
-}
-
-/// Truncates a string to the given maximum character count, appending '…' if cut.
-pub fn truncate(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max - 1).collect();
-        format!("{}…", cut)
-    }
-}
-
-/// Shows a path relative to the scanned root (e.g. "./photos/2024").
-fn relative(path: &Path, root: &Path) -> String {
-    match path.strip_prefix(root) {
-        Ok(rel) if rel.as_os_str().is_empty() => "(this folder)".to_string(),
-        Ok(rel) => format!("./{}", rel.display()),
-        Err(_) => path.display().to_string(),
-    }
-}
-
-/// Relative folder that contains a file.
-pub fn folder_of(file: &FileInfo, root: &Path) -> String {
-    file.path
-        .parent()
-        .map(|p| relative(p, root))
-        .unwrap_or_else(|| ".".to_string())
-}
-
-/// A proportional bar like `██████░░░░`.
-fn bar(part: f64, total: f64, width: usize) -> String {
-    let filled = if total > 0.0 {
-        ((part / total) * width as f64).round() as usize
-    } else {
-        0
-    }
-    .min(width);
-    format!("{}{}", "█".repeat(filled), dim(&"░".repeat(width - filled)))
-}
-
-/// Converts a byte count to a human-readable string (B, KB, MB, GB).
-pub fn format_size(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-
-    match bytes {
-        b if b >= GB => format!("{:.2} GB", b as f64 / GB as f64),
-        b if b >= MB => format!("{:.2} MB", b as f64 / MB as f64),
-        b if b >= KB => format!("{:.2} KB", b as f64 / KB as f64),
-        b => format!("{} B", b),
-    }
-}
 
 // ─────────────────────────────────────────────────────────────
 // SCAN OVERVIEW
@@ -191,27 +84,6 @@ fn print_ranking(title: &str, map: HashMap<String, (u64, usize)>, total_size: u6
 // ─────────────────────────────────────────────────────────────
 // FILE LISTINGS
 // ─────────────────────────────────────────────────────────────
-
-/// Groups a list of files by their containing folder.
-pub fn group_by_folder(files: &[FileInfo]) -> BTreeMap<PathBuf, Vec<FileInfo>> {
-    let mut grouped: BTreeMap<PathBuf, Vec<FileInfo>> = BTreeMap::new();
-
-    for file in files {
-        let parent = file
-            .path
-            .parent()
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("."));
-
-        grouped.entry(parent).or_default().push(file.clone());
-    }
-
-    for file_list in grouped.values_mut() {
-        file_list.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
-    }
-
-    grouped
-}
 
 /// Displays the scan results organized as a visual tree.
 pub fn print_tree(root: &Path, files: &[FileInfo]) {

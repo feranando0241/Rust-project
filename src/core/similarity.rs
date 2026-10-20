@@ -23,7 +23,8 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
-use crate::models::FileInfo;
+use crate::core::files::is_document;
+use crate::core::models::FileInfo;
 
 // ─────────────────────────────────────────────────────────────
 // DATA STRUCTURES
@@ -233,18 +234,18 @@ fn calculate_composite_score(
 /// - `target_file`: The document used as the reference.
 /// - `candidates`: All files to compare against.
 /// - `min_threshold_percentage`: Minimum percentage to include in results (0-100).
+///
+/// Returns `Err` with a user-facing message when the base document has no
+/// usable text (empty, binary, or a scanned PDF).
 pub fn find_similar_documents(
     target_file: &FileInfo,
     candidates: &[FileInfo],
     min_threshold_percentage: f64,
-) -> Vec<SimilarityMatch> {
+) -> Result<Vec<SimilarityMatch>, String> {
     // Extract and tokenize the base file's text
     let target_text = match extract_text_from_file(&target_file.path) {
         Some(txt) if !txt.trim().is_empty() => txt,
-        _ => {
-            println!("Could not extract text from the base file. It may be empty or binary.");
-            return Vec::new();
-        }
+        _ => return Err("Could not extract text from the base file. It may be empty or binary.".to_string()),
     };
 
     let target_words_vec = tokenize_words(&target_text);
@@ -252,8 +253,7 @@ pub fn find_similar_documents(
     let target_bigrams = create_shingles(&target_words_vec, 2);
 
     if target_word_set.is_empty() {
-        println!("The base file contains no analyzable words after cleaning.");
-        return Vec::new();
+        return Err("The base file contains no analyzable words after cleaning.".to_string());
     }
 
     let mut matches = Vec::new();
@@ -265,12 +265,7 @@ pub fn find_similar_documents(
         }
 
         // Only process text or PDF files
-        let ext = candidate.extension.as_deref().unwrap_or("").to_lowercase();
-        let is_text_file = matches!(
-            ext.as_str(),
-            "pdf" | "txt" | "md" | "rs" | "json" | "csv" | "py" | "js" | "c" | "cpp"
-        );
-        if !is_text_file {
+        if !is_document(candidate) {
             continue;
         }
 
@@ -309,5 +304,27 @@ pub fn find_similar_documents(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    matches
+    Ok(matches)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_similarity_algorithm() {
+        let mut set1 = HashSet::new();
+        set1.insert("thesis about intelligence".to_string());
+        set1.insert("applied artificial intelligence".to_string());
+        set1.insert("experiment results".to_string());
+
+        let mut set2 = HashSet::new();
+        set2.insert("thesis about intelligence".to_string());
+        set2.insert("applied artificial intelligence".to_string());
+        set2.insert("another different section".to_string());
+
+        let (sim, count) = calculate_jaccard_similarity(&set1, &set2);
+        assert_eq!(count, 2);
+        assert!(sim >= 50.0, "Should have at least 50% similarity");
+    }
 }

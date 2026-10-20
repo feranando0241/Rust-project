@@ -1,7 +1,9 @@
+//! Recursive directory scanning and the rules for which folders and files to skip.
+
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use crate::models::FileInfo;
+use crate::core::models::FileInfo;
 
 /// List of technical, dependency, and system folders ignored by default.
 ///
@@ -185,4 +187,19 @@ fn scan_recursive(current_path: &Path, files: &mut Vec<FileInfo>) -> io::Result<
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_should_ignore_directory() {
+        assert!(should_ignore_directory("node_modules"));
+        assert!(should_ignore_directory("target"));
+        assert!(should_ignore_directory(".git"));
+        assert!(should_ignore_directory(".cache"));
+        assert!(!should_ignore_directory("photos"));
+        assert!(!should_ignore_directory("documents"));
+    }
 }

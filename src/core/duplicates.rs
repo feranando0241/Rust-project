@@ -1,9 +1,12 @@
+//! Duplicate detection (size → 4 KB prefix → full SHA-256) and moving the
+//! extra copies to the Trash with safety checks.
+
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
-use crate::models::FileInfo;
+use crate::core::models::FileInfo;
 
 /// Represents a verified group of duplicate files.
 #[derive(Debug, Clone)]
@@ -16,28 +19,6 @@ pub struct DuplicateGroup {
     pub original: FileInfo,
     /// The redundant files that are candidates to be sent to the Trash.
     pub duplicates: Vec<FileInfo>,
-}
-
-/// Returns the `n` heaviest files in the list, sorted from largest to smallest.
-pub fn get_top_largest(files: &[FileInfo], n: usize) -> Vec<FileInfo> {
-    let mut sorted = files.to_vec();
-    sorted.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
-    sorted.into_iter().take(n).collect()
-}
-
-/// Filters files that match a specific extension (e.g. "pdf", "png").
-pub fn filter_by_extension(files: &[FileInfo], ext: &str) -> Vec<FileInfo> {
-    let clean_ext = ext.trim().trim_start_matches('.').to_lowercase();
-    files
-        .iter()
-        .filter(|f| {
-            f.extension
-                .as_ref()
-                .map(|e| e == &clean_ext)
-                .unwrap_or(false)
-        })
-        .cloned()
-        .collect()
 }
 
 /// Computes the SHA-256 cryptographic hash of a file's content.
@@ -223,43 +204,84 @@ pub fn trash_duplicates(groups: &[DuplicateGroup]) -> TrashReport {
     report
 }
 
-/// Represents a group of files that share the same filename.
-#[derive(Debug, Clone)]
-pub struct SameNameGroup {
-    /// The shared base name of all files in the group (normalized, case-insensitive).
-    pub shared_name: String,
-    /// All files that have that name, in different locations.
-    pub files: Vec<FileInfo>,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::scanner::scan_directory;
 
-/// Finds files that share the same name (regardless of location or content).
-///
-/// ### How it works:
-/// 1. Groups all files by their full name (with extension), normalized to lowercase.
-/// 2. Returns only groups with 2 or more files, sorted by number of matches descending.
-///
-/// ### Difference from exact duplicates:
-/// - **Identical copies** (option 5): same content verified by SHA-256 hash.
-/// - **Same name** (this function): same filename, content may differ.
-///
-/// Useful for detecting different versions of the same file spread across multiple folders.
-pub fn find_same_name_files(files: &[FileInfo]) -> Vec<SameNameGroup> {
-    let mut by_name: HashMap<String, Vec<FileInfo>> = HashMap::new();
-
-    for file in files {
-        // Normalize to lowercase so "Thesis.pdf" and "thesis.pdf" are treated as equal
-        let key = file.name().to_lowercase();
-        by_name.entry(key).or_default().push(file.clone());
+    /// Creates an empty, unique temp directory for a test.
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("oxide_clean_{}_{}", name, std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
-    let mut groups: Vec<SameNameGroup> = by_name
-        .into_iter()
-        .filter(|(_, group)| group.len() > 1)
-        .map(|(shared_name, files)| SameNameGroup { shared_name, files })
-        .collect();
+    #[test]
+    fn test_duplicates_keep_oldest() {
+        use std::time::{Duration, SystemTime};
 
-    // Sort by most to least matches
-    groups.sort_by(|a, b| b.files.len().cmp(&a.files.len()));
+        let dir = temp_dir("keep_oldest");
+        let newer = dir.join("a_newer.txt");
+        let older = dir.join("b_older.txt");
+        fs::write(&newer, "same content").unwrap();
+        fs::write(&older, "same content").unwrap();
+        let old_time = SystemTime::now() - Duration::from_secs(3600);
+        File::options().write(true).open(&older).unwrap().set_modified(old_time).unwrap();
 
-    groups
+        let groups = find_exact_duplicates(&scan_directory(&dir).unwrap());
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].original.path, older);
+        assert_eq!(groups[0].duplicates[0].path, newer);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_hardlinks_are_not_duplicates() {
+        let dir = temp_dir("hardlinks");
+        fs::write(dir.join("a.txt"), "same content").unwrap();
+        fs::hard_link(dir.join("a.txt"), dir.join("b.txt")).unwrap();
+
+        let groups = find_exact_duplicates(&scan_directory(&dir).unwrap());
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert!(groups.is_empty(), "hardlinks to one file must not be reported as duplicates");
+    }
+
+    #[test]
+    fn test_same_prefix_different_content_not_duplicates() {
+        let dir = temp_dir("same_prefix");
+        // Identical first 4 KB, different bytes after that: the prefix filter
+        // lets them through, the full hash must reject them.
+        let prefix = "x".repeat(5000);
+        fs::write(dir.join("a.bin"), format!("{}AAAA", prefix)).unwrap();
+        fs::write(dir.join("b.bin"), format!("{}BBBB", prefix)).unwrap();
+
+        let groups = find_exact_duplicates(&scan_directory(&dir).unwrap());
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn test_trash_skips_group_when_kept_copy_changed() {
+        let dir = temp_dir("changed_original");
+        fs::write(dir.join("a.txt"), "same content").unwrap();
+        fs::write(dir.join("b.txt"), "same content").unwrap();
+
+        let groups = find_exact_duplicates(&scan_directory(&dir).unwrap());
+        assert_eq!(groups.len(), 1);
+        // The kept copy is edited after the scan: its duplicate must survive
+        fs::write(&groups[0].original.path, "edited after scan").unwrap();
+
+        let report = trash_duplicates(&groups);
+        let duplicate_still_there = groups[0].duplicates[0].path.exists();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(report.moved, 0);
+        assert_eq!(report.failed.len(), 1);
+        assert!(duplicate_still_there);
+    }
 }

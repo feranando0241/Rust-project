@@ -169,13 +169,27 @@ OxideClean automatically skips folders and files that generate noise:
 
 ```
 src/
-├── main.rs        — Entry point, menus, and user interaction handlers
-├── models.rs      — FileInfo struct (path, size, extension)
-├── scanner.rs     — Recursive directory scanning and ignore rules
-├── actions.rs     — Hashing, duplicates, filtering, same-name detection
-├── formatter.rs   — All terminal output and display functions
-└── similarity.rs  — Document similarity engine (Jaccard + bigrams)
+├── main.rs            — Entry point: parse arguments, pick a mode
+├── cli.rs             — Command-line argument parsing
+├── app.rs             — Actions shared by the CLI and the menus (incl. Trash rules)
+├── core/              — Logic only: never prints, never reads input
+│   ├── models.rs      — FileInfo struct (path, size, extension)
+│   ├── scanner.rs     — Recursive directory scanning and ignore rules
+│   ├── duplicates.rs  — Size → 4 KB prefix → SHA-256, hardlinks, move to Trash
+│   ├── files.rs       — Biggest files, by type, same name, by folder
+│   └── similarity.rs  — Document similarity engine (Jaccard + bigrams)
+└── ui/                — Everything printed or typed
+    ├── style.rs       — Colors, titles, prompts, text helpers
+    ├── report.rs      — Result screens
+    ├── input.rs       — Reading lines and paths
+    ├── menu.rs        — Start screen and action menu
+    ├── browser.rs     — Folder browser
+    └── picker.rs      — Paginated document picker
+tests/
+└── cli.rs             — End-to-end tests that run the real binary
 ```
+
+The one rule: `core/` never imports `ui/` or `app`. See [ADR-0002](docs/adr/0002-modular-architecture.md) for the reasoning and a short "how to add a feature" guide.
 
 ---
 
@@ -185,14 +199,8 @@ src/
 cargo test
 ```
 
-The test suite covers:
-
-- `test_format_sizes` — byte formatting (B, KB, MB, GB)
-- `test_is_exit_command` — exit command recognition
-- `test_should_ignore_directory` — ignore-rules logic
-- `test_similarity_algorithm` — Jaccard similarity calculation
-- `test_duplicates_keep_oldest` — the oldest copy is the one kept
-- `cli::tests` — command-line parsing: valid combinations and usage errors
+- **Unit tests** live next to the code they test (`#[cfg(test)]` in each module): ignore rules, duplicate detection (oldest kept, hardlinks, same prefix with different content, kept copy changed before trashing), file queries, similarity scoring, size formatting, exit commands and argument parsing.
+- **End-to-end tests** in `tests/cli.rs` run the compiled binary against a temporary folder and check what the user sees: output and exit codes for every CLI action, the refusal to trash without a terminal, and the interactive menus.
 
 ---
 
