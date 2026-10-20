@@ -34,7 +34,10 @@ cd ~/path/to/Rust\ project
 # Build the optimized binary
 cargo build --release
 
-# Install to your local bin (make sure ~/.local/bin is in your PATH)
+# Install to your local bin (make sure ~/.local/bin is in your PATH).
+# Remove the old copy first: on macOS, overwriting a binary in place makes
+# the system kill it on launch (exit code 137).
+rm -f ~/.local/bin/oxide_clean
 cp target/release/oxide_clean ~/.local/bin/oxide_clean
 ```
 

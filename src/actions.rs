@@ -58,9 +58,21 @@ pub fn calculate_sha256(path: &Path) -> io::Result<String> {
     Ok(format!("{:x}", result))
 }
 
-/// Finds real duplicates using a two-step approach:
+/// Bytes read by `hash_prefix`: enough to tell most different files apart.
+const PREFIX_BYTES: u64 = 4096;
+
+/// SHA-256 of only the first `PREFIX_BYTES` of a file. A cheap filter: two files
+/// with different prefixes can't be identical, so they never reach the full hash.
+fn hash_prefix(path: &Path) -> io::Result<String> {
+    let mut prefix = Vec::with_capacity(PREFIX_BYTES as usize);
+    File::open(path)?.take(PREFIX_BYTES).read_to_end(&mut prefix)?;
+    Ok(format!("{:x}", Sha256::digest(&prefix)))
+}
+
+/// Finds real duplicates using a three-step approach:
 /// 1. Group by file size in bytes (fast, zero-cost pre-filter).
-/// 2. For groups with more than one file, compute SHA-256 to confirm 100% match.
+/// 2. Within each size group, compare the first 4 KB of each file.
+/// 3. Confirm the remaining candidates with a full SHA-256.
 pub fn find_exact_duplicates(files: &[FileInfo]) -> Vec<DuplicateGroup> {
     // Step 1: Group by size
     let mut by_size: HashMap<u64, Vec<FileInfo>> = HashMap::new();
@@ -80,8 +92,10 @@ pub fn find_exact_duplicates(files: &[FileInfo]) -> Vec<DuplicateGroup> {
 
     for candidates in candidate_groups {
         let mut by_hash: HashMap<String, Vec<FileInfo>> = HashMap::new();
+        let mut by_prefix: HashMap<String, Vec<FileInfo>> = HashMap::new();
         let mut seen_identities = HashSet::new();
 
+        // Step 2: cheap prefix filter, so most files are never read in full
         for file in candidates {
             // Hardlinks share the same data on disk: trashing one frees nothing,
             // so only the first path to each underlying file is considered.
@@ -90,8 +104,17 @@ pub fn find_exact_duplicates(files: &[FileInfo]) -> Vec<DuplicateGroup> {
             {
                 continue;
             }
-            if let Ok(hash) = calculate_sha256(&file.path) {
-                by_hash.entry(hash).or_default().push(file);
+            if let Ok(prefix) = hash_prefix(&file.path) {
+                by_prefix.entry(prefix).or_default().push(file);
+            }
+        }
+
+        // Step 3: full hash, only for files whose prefixes already match
+        for same_prefix in by_prefix.into_values().filter(|list| list.len() > 1) {
+            for file in same_prefix {
+                if let Ok(hash) = calculate_sha256(&file.path) {
+                    by_hash.entry(hash).or_default().push(file);
+                }
             }
         }
 

@@ -709,6 +709,21 @@ mod tests {
     }
 
     #[test]
+    fn test_same_prefix_different_content_not_duplicates() {
+        let dir = temp_dir("same_prefix");
+        // Identical first 4 KB, different bytes after that: the prefix filter
+        // lets them through, the full hash must reject them.
+        let prefix = "x".repeat(5000);
+        std::fs::write(dir.join("a.bin"), format!("{}AAAA", prefix)).unwrap();
+        std::fs::write(dir.join("b.bin"), format!("{}BBBB", prefix)).unwrap();
+
+        let groups = find_exact_duplicates(&scan_directory(&dir).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(groups.is_empty());
+    }
+
+    #[test]
     fn test_trash_skips_group_when_kept_copy_changed() {
         let dir = temp_dir("changed_original");
         std::fs::write(dir.join("a.txt"), "same content").unwrap();
