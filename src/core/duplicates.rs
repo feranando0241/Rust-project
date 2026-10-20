@@ -6,6 +6,7 @@ use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
+use crate::core::Progress;
 use crate::core::models::FileInfo;
 
 /// Represents a verified group of duplicate files.
@@ -54,7 +55,11 @@ fn hash_prefix(path: &Path) -> io::Result<String> {
 /// 1. Group by file size in bytes (fast, zero-cost pre-filter).
 /// 2. Within each size group, compare the first 4 KB of each file.
 /// 3. Confirm the remaining candidates with a full SHA-256.
-pub fn find_exact_duplicates(files: &[FileInfo]) -> Vec<DuplicateGroup> {
+///
+/// `on_progress` gets `(checked, total)`, where `total` is the number of files
+/// that share their size with another file (the only ones that need reading).
+/// A file counts as checked once it is ruled out or fully hashed.
+pub fn find_exact_duplicates(files: &[FileInfo], on_progress: Progress) -> Vec<DuplicateGroup> {
     // Step 1: Group by size
     let mut by_size: HashMap<u64, Vec<FileInfo>> = HashMap::new();
     for file in files {
@@ -68,10 +73,14 @@ pub fn find_exact_duplicates(files: &[FileInfo]) -> Vec<DuplicateGroup> {
         .filter(|list| list.len() > 1)
         .collect();
 
-    // Step 2: Group by SHA-256 hash within each same-size group
+    let total: usize = candidate_groups.iter().map(Vec::len).sum();
+    let mut checked = 0;
+    on_progress(checked, total);
+
     let mut duplicate_groups = Vec::new();
 
     for candidates in candidate_groups {
+        let group_len = candidates.len();
         let mut by_hash: HashMap<String, Vec<FileInfo>> = HashMap::new();
         let mut by_prefix: HashMap<String, Vec<FileInfo>> = HashMap::new();
         let mut seen_identities = HashSet::new();
@@ -91,12 +100,19 @@ pub fn find_exact_duplicates(files: &[FileInfo]) -> Vec<DuplicateGroup> {
         }
 
         // Step 3: full hash, only for files whose prefixes already match
-        for same_prefix in by_prefix.into_values().filter(|list| list.len() > 1) {
-            for file in same_prefix {
-                if let Ok(hash) = calculate_sha256(&file.path) {
-                    by_hash.entry(hash).or_default().push(file);
-                }
+        let same_prefix_groups: Vec<Vec<FileInfo>> =
+            by_prefix.into_values().filter(|list| list.len() > 1).collect();
+        let needs_full_hash: usize = same_prefix_groups.iter().map(Vec::len).sum();
+        // Everything else in this size group was ruled out by the steps above
+        checked += group_len - needs_full_hash;
+        on_progress(checked, total);
+
+        for file in same_prefix_groups.into_iter().flatten() {
+            if let Ok(hash) = calculate_sha256(&file.path) {
+                by_hash.entry(hash).or_default().push(file);
             }
+            checked += 1;
+            on_progress(checked, total);
         }
 
         for (hash, mut matching_files) in by_hash {
@@ -229,12 +245,32 @@ mod tests {
         let old_time = SystemTime::now() - Duration::from_secs(3600);
         File::options().write(true).open(&older).unwrap().set_modified(old_time).unwrap();
 
-        let groups = find_exact_duplicates(&scan_directory(&dir).unwrap());
+        let groups = find_exact_duplicates(&scan_directory(&dir, &|_, _| {}).unwrap(), &|_, _| {});
         fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].original.path, older);
         assert_eq!(groups[0].duplicates[0].path, newer);
+    }
+
+    #[test]
+    fn test_progress_ends_at_total() {
+        use std::cell::Cell;
+
+        let dir = temp_dir("progress");
+        // Two identical files, one same-size different file, one unique size
+        fs::write(dir.join("a.txt"), "same").unwrap();
+        fs::write(dir.join("b.txt"), "same").unwrap();
+        fs::write(dir.join("c.txt"), "diff").unwrap();
+        fs::write(dir.join("d.txt"), "other size").unwrap();
+
+        let last = Cell::new((usize::MAX, usize::MAX));
+        let files = scan_directory(&dir, &|_, _| {}).unwrap();
+        find_exact_duplicates(&files, &|done, total| last.set((done, total)));
+        fs::remove_dir_all(&dir).unwrap();
+
+        // Only the three 4-byte files need checking; all of them get checked
+        assert_eq!(last.get(), (3, 3));
     }
 
     #[cfg(unix)]
@@ -244,7 +280,7 @@ mod tests {
         fs::write(dir.join("a.txt"), "same content").unwrap();
         fs::hard_link(dir.join("a.txt"), dir.join("b.txt")).unwrap();
 
-        let groups = find_exact_duplicates(&scan_directory(&dir).unwrap());
+        let groups = find_exact_duplicates(&scan_directory(&dir, &|_, _| {}).unwrap(), &|_, _| {});
         fs::remove_dir_all(&dir).unwrap();
 
         assert!(groups.is_empty(), "hardlinks to one file must not be reported as duplicates");
@@ -259,7 +295,7 @@ mod tests {
         fs::write(dir.join("a.bin"), format!("{}AAAA", prefix)).unwrap();
         fs::write(dir.join("b.bin"), format!("{}BBBB", prefix)).unwrap();
 
-        let groups = find_exact_duplicates(&scan_directory(&dir).unwrap());
+        let groups = find_exact_duplicates(&scan_directory(&dir, &|_, _| {}).unwrap(), &|_, _| {});
         fs::remove_dir_all(&dir).unwrap();
 
         assert!(groups.is_empty());
@@ -271,7 +307,7 @@ mod tests {
         fs::write(dir.join("a.txt"), "same content").unwrap();
         fs::write(dir.join("b.txt"), "same content").unwrap();
 
-        let groups = find_exact_duplicates(&scan_directory(&dir).unwrap());
+        let groups = find_exact_duplicates(&scan_directory(&dir, &|_, _| {}).unwrap(), &|_, _| {});
         assert_eq!(groups.len(), 1);
         // The kept copy is edited after the scan: its duplicate must survive
         fs::write(&groups[0].original.path, "edited after scan").unwrap();

@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::app;
 use crate::core::files::{get_top_largest, is_document};
 use crate::core::models::FileInfo;
-use crate::core::scanner::{list_accessible_subdirectories, scan_directory};
+use crate::core::scanner::list_accessible_subdirectories;
 use crate::ui::browser::run_directory_browser;
 use crate::ui::input::{is_exit_command, is_one_of, read_line_from_user, resolve_user_path};
 use crate::ui::picker::select_file_paginated;
@@ -58,7 +58,7 @@ pub fn run_interactive() {
 pub fn process_target_path(target_path: &Path) {
     hint(&format!("\nScanning {} …", target_path.display()));
 
-    match scan_directory(target_path) {
+    match app::scan(target_path) {
         Ok(files) if files.is_empty() => {
             println!("No files found in {}.", target_path.display());
             hint("Hidden folders and system/build folders (like node_modules) are skipped.");

@@ -1,6 +1,7 @@
 //! Simple queries over a list of scanned files: biggest, by type, by name,
 //! by folder.
 
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use crate::core::models::FileInfo;
@@ -17,7 +18,7 @@ pub fn is_document(file: &FileInfo) -> bool {
 /// Returns the `n` heaviest files in the list, sorted from largest to smallest.
 pub fn get_top_largest(files: &[FileInfo], n: usize) -> Vec<FileInfo> {
     let mut sorted = files.to_vec();
-    sorted.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    sorted.sort_by_key(|f| Reverse(f.size_bytes));
     sorted.into_iter().take(n).collect()
 }
 
@@ -51,7 +52,7 @@ pub fn group_by_folder(files: &[FileInfo]) -> BTreeMap<PathBuf, Vec<FileInfo>> {
     }
 
     for file_list in grouped.values_mut() {
-        file_list.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+        file_list.sort_by_key(|f| Reverse(f.size_bytes));
     }
 
     grouped
@@ -93,7 +94,7 @@ pub fn find_same_name_files(files: &[FileInfo]) -> Vec<SameNameGroup> {
         .collect();
 
     // Sort by most to least matches
-    groups.sort_by(|a, b| b.files.len().cmp(&a.files.len()));
+    groups.sort_by_key(|g| Reverse(g.files.len()));
 
     groups
 }

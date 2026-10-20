@@ -23,6 +23,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
+use crate::core::Progress;
 use crate::core::files::is_document;
 use crate::core::models::FileInfo;
 
@@ -237,10 +238,13 @@ fn calculate_composite_score(
 ///
 /// Returns `Err` with a user-facing message when the base document has no
 /// usable text (empty, binary, or a scanned PDF).
+///
+/// `on_progress` gets `(read, total)` over the other documents to compare.
 pub fn find_similar_documents(
     target_file: &FileInfo,
     candidates: &[FileInfo],
     min_threshold_percentage: f64,
+    on_progress: Progress,
 ) -> Result<Vec<SimilarityMatch>, String> {
     // Extract and tokenize the base file's text
     let target_text = match extract_text_from_file(&target_file.path) {
@@ -258,16 +262,14 @@ pub fn find_similar_documents(
 
     let mut matches = Vec::new();
 
-    for candidate in candidates {
-        // Skip comparing the file against itself
-        if candidate.path == target_file.path {
-            continue;
-        }
+    // Only text or PDF files, and never the base file against itself
+    let others: Vec<&FileInfo> = candidates
+        .iter()
+        .filter(|c| c.path != target_file.path && is_document(c))
+        .collect();
 
-        // Only process text or PDF files
-        if !is_document(candidate) {
-            continue;
-        }
+    for (read, candidate) in others.iter().enumerate() {
+        on_progress(read, others.len());
 
         if let Some(cand_text) = extract_text_from_file(&candidate.path) {
             if cand_text.trim().is_empty() {
@@ -288,7 +290,7 @@ pub fn find_similar_documents(
             if similarity >= min_threshold_percentage {
                 matches.push(SimilarityMatch {
                     target_file: target_file.clone(),
-                    candidate_file: candidate.clone(),
+                    candidate_file: (*candidate).clone(),
                     similarity_percentage: similarity,
                     shared_keyword_count: shared_words,
                     shared_bigram_count: shared_bigrams,
@@ -296,6 +298,7 @@ pub fn find_similar_documents(
             }
         }
     }
+    on_progress(others.len(), others.len());
 
     // Sort from highest to lowest similarity
     matches.sort_by(|a, b| {

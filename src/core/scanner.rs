@@ -3,6 +3,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use crate::core::Progress;
 use crate::core::models::FileInfo;
 
 /// List of technical, dependency, and system folders ignored by default.
@@ -83,10 +84,10 @@ pub fn should_ignore_file(file_name: &str) -> bool {
         return true;
     }
     // Ignore by extension (bytecode and compiled files)
-    if let Some(ext) = file_name.rsplit('.').next() {
-        if IGNORED_EXTENSIONS.contains(&ext) {
-            return true;
-        }
+    if let Some(ext) = file_name.rsplit('.').next()
+        && IGNORED_EXTENSIONS.contains(&ext)
+    {
+        return true;
     }
     false
 }
@@ -136,15 +137,16 @@ pub fn list_accessible_subdirectories(dir_path: &Path) -> io::Result<Vec<PathBuf
 }
 
 /// Scans a directory and all its subfolders recursively.
-/// Returns a list of all files found.
-pub fn scan_directory(dir_path: &Path) -> io::Result<Vec<FileInfo>> {
+/// Returns a list of all files found. `on_progress` gets the running count
+/// of files found (the total is unknown during a scan, so it is always 0).
+pub fn scan_directory(dir_path: &Path, on_progress: Progress) -> io::Result<Vec<FileInfo>> {
     let mut files = Vec::new();
-    scan_recursive(dir_path, &mut files)?;
+    scan_recursive(dir_path, &mut files, on_progress)?;
     Ok(files)
 }
 
 /// Recursive helper that traverses the folder hierarchy.
-fn scan_recursive(current_path: &Path, files: &mut Vec<FileInfo>) -> io::Result<()> {
+fn scan_recursive(current_path: &Path, files: &mut Vec<FileInfo>, on_progress: Progress) -> io::Result<()> {
     let entries = match fs::read_dir(current_path) {
         Ok(read_dir) => read_dir,
         Err(_) => return Ok(()), // No read permission — skip silently
@@ -163,7 +165,7 @@ fn scan_recursive(current_path: &Path, files: &mut Vec<FileInfo>) -> io::Result<
             if should_ignore_directory(name_str) {
                 continue;
             }
-            scan_recursive(&path, files)?;
+            scan_recursive(&path, files, on_progress)?;
         } else if file_type.is_file() {
             if should_ignore_file(name_str) {
                 continue;
@@ -183,6 +185,7 @@ fn scan_recursive(current_path: &Path, files: &mut Vec<FileInfo>) -> io::Result<
                 size_bytes,
                 extension,
             });
+            on_progress(files.len(), 0);
         }
     }
 

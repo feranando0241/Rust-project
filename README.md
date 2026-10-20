@@ -202,6 +202,8 @@ cargo test
 - **Unit tests** live next to the code they test (`#[cfg(test)]` in each module): ignore rules, duplicate detection (oldest kept, hardlinks, same prefix with different content, kept copy changed before trashing), file queries, similarity scoring, size formatting, exit commands and argument parsing.
 - **End-to-end tests** in `tests/cli.rs` run the compiled binary against a temporary folder and check what the user sees: output and exit codes for every CLI action, the refusal to trash without a terminal, and the interactive menus.
 
+**Continuous integration:** GitHub Actions (`.github/workflows/ci.yml`) runs `cargo clippy --all-targets -- -D warnings` and `cargo test` on macOS and Linux for every push to `master` and every pull request. Any new warning fails the build.
+
 ---
 
 ## Dependencies

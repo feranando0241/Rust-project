@@ -1,0 +1,32 @@
+# Runs the tests and the linter on every push and pull request, so a change
+# that breaks something already working is caught before it lands.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS is where the tool is used; Linux catches platform assumptions
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Lint (warnings are errors)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit and end-to-end tests
+        run: cargo test

@@ -17,6 +17,7 @@ use crate::ui::report::{
     print_exact_duplicates, print_filtered_files, print_same_name_results,
     print_similarity_results, print_top_largest, print_trash_report,
 };
+use crate::ui::progress::Spinner;
 use crate::ui::style::{hint, plural, prompt};
 
 /// Resolves a folder given on the command line, expanding `~`.
@@ -29,9 +30,15 @@ pub fn resolve_folder(path: &str) -> Result<PathBuf, String> {
     }
 }
 
+/// Scans `root` recursively, showing a spinner with the files found so far.
+pub fn scan(root: &Path) -> io::Result<Vec<FileInfo>> {
+    let spinner = Spinner::start("Scanning", "files found");
+    scan_directory(root, &|done, total| spinner.update(done, total))
+}
+
 /// Scans `root` and runs one command-line action on it.
 pub fn run_action(root: &Path, action: Action) -> Result<(), String> {
-    let files = scan_directory(root).map_err(|e| format!("scan failed: {}", e))?;
+    let files = scan(root).map_err(|e| format!("scan failed: {}", e))?;
 
     match action {
         Action::Largest(n) => print_top_largest(root, &get_top_largest(&files, n)),
@@ -100,7 +107,10 @@ pub fn show_similar_documents(
     files: &[FileInfo],
     threshold: f64,
 ) -> Result<(), String> {
-    let matches = find_similar_documents(target, files, threshold)?;
+    let matches = {
+        let spinner = Spinner::start("Reading documents", "documents");
+        find_similar_documents(target, files, threshold, &|done, total| spinner.update(done, total))?
+    };
     print_similarity_results(root, target.name(), &matches, threshold);
     Ok(())
 }
@@ -117,7 +127,10 @@ pub fn handle_duplicates(
     assume_yes: bool,
 ) -> Result<(), String> {
     hint("\nComparing file contents …");
-    let duplicate_groups = find_exact_duplicates(files);
+    let duplicate_groups = {
+        let spinner = Spinner::start("Comparing file contents", "files");
+        find_exact_duplicates(files, &|done, total| spinner.update(done, total))
+    };
 
     if duplicate_groups.is_empty() {
         println!("No identical copies found. Nothing to clean up here.\n");

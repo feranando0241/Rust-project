@@ -1,5 +1,6 @@
 //! Result screens: everything the app prints after a scan or an action.
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use crate::core::duplicates::{DuplicateGroup, TrashReport};
@@ -64,7 +65,7 @@ pub fn print_summary(root: &Path, files: &[FileInfo]) {
 /// Prints the top entries of a (name → size, count) map with share-of-total bars.
 fn print_ranking(title: &str, map: HashMap<String, (u64, usize)>, total_size: u64) {
     let mut rows: Vec<_> = map.into_iter().collect();
-    rows.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+    rows.sort_by_key(|(_, (size, _))| Reverse(*size));
 
     println!("\n  {}", bold(title));
     for (name, (size, count)) in rows.iter().take(SUMMARY_ROWS) {
