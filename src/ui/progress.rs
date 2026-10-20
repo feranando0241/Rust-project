@@ -53,9 +53,10 @@ impl Spinner {
         Spinner { done, total, stop, handle }
     }
 
-    /// Records progress; the next frame shows it.
+    /// Records progress; the next frame shows it. Parallel work may report out
+    /// of order, so the count only ever moves forward.
     pub fn update(&self, done: usize, total: usize) {
-        self.done.store(done, Ordering::Relaxed);
+        self.done.fetch_max(done, Ordering::Relaxed);
         self.total.store(total, Ordering::Relaxed);
     }
 }

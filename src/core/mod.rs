@@ -15,4 +15,5 @@ pub mod similarity;
 /// Progress callback for long operations, called as `(done, total)`.
 /// `total` is 0 when it isn't known yet (e.g. while scanning). This is how
 /// `core` reports progress without printing: the UI decides how to show it.
-pub type Progress<'a> = &'a dyn Fn(usize, usize);
+/// `Sync` because parallel work reports from several threads.
+pub type Progress<'a> = &'a (dyn Fn(usize, usize) + Sync);
