@@ -7,43 +7,130 @@ mod scanner;
 mod formatter;
 mod actions;
 mod similarity;
+mod cli;
 
-use std::io::{self, Write};
+use std::fs;
+use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
+use cli::{Action, Command};
 use actions::{
     filter_by_extension, find_exact_duplicates, find_same_name_files, get_top_largest,
-    send_files_to_trash,
+    trash_duplicates,
 };
 use formatter::{
     print_accessible_directories, print_exact_duplicates, print_filtered_files,
     print_same_name_results, print_similarity_results, print_summary, print_top_largest,
-    print_tree, truncate,
+    error, folder_of, header, hint, plural, print_trash_report, print_tree, prompt, truncate,
 };
 use models::FileInfo;
 use scanner::{list_accessible_subdirectories, scan_directory};
 use similarity::find_similar_documents;
 
 /// Application entry point.
-fn main() {
-    println!(" OxideClean — File Organizer & Scanner");
-    println!("=========================================");
+///
+/// Exit codes: 0 = ok, 1 = runtime error, 2 = usage error.
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    match cli::parse_args(&args) {
+        Ok(Command::Interactive) => {
+            run_interactive();
+            ExitCode::SUCCESS
+        }
+        Ok(Command::Help) => {
+            print!("{}", cli::HELP);
+            ExitCode::SUCCESS
+        }
+        Ok(Command::Run { path, action }) => match run_command(&path, action) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("error: {}", err);
+                ExitCode::from(1)
+            }
+        },
+        Err(err) => {
+            eprintln!("error: {}\nRun 'oxide_clean --help' for usage.", err);
+            ExitCode::from(2)
+        }
+    }
+}
+
+/// Runs a command-line request: scans `path`, then either runs one action and
+/// returns, or opens the interactive action menu when no action was given.
+fn run_command(path: &str, action: Option<Action>) -> Result<(), String> {
+    let root = resolve_user_path(path);
+    if !root.is_dir() {
+        return Err(format!("'{}' is not a directory", root.display()));
+    }
+
+    let Some(action) = action else {
+        process_target_path(&root);
+        return Ok(());
+    };
+
+    let files = scan_directory(&root).map_err(|e| format!("scan failed: {}", e))?;
+
+    match action {
+        Action::Largest(n) => print_top_largest(&root, &get_top_largest(&files, n)),
+        Action::Ext(ext) => show_files_by_extension(&root, &files, &ext),
+        Action::Dupes { trash, assume_yes } => handle_duplicates(&root, &files, trash, assume_yes)?,
+        Action::SameName => handle_same_name_files(&root, &files),
+        Action::Similar { file, threshold } => {
+            let target = locate_base_file(&root, &file)?;
+            let matches = find_similar_documents(&target, &files, threshold);
+            print_similarity_results(&root, target.name(), &matches, threshold);
+        }
+    }
+    Ok(())
+}
+
+/// Builds the `FileInfo` for the `--similar` base file. When the file lives
+/// inside `root`, its path is expressed the same way the scanner builds paths
+/// (root + relative part) so the comparison recognizes and skips it.
+fn locate_base_file(root: &Path, file: &str) -> Result<FileInfo, String> {
+    let path = resolve_user_path(file);
+    let metadata = fs::metadata(&path).map_err(|e| format!("cannot read '{}': {}", path.display(), e))?;
+    if !metadata.is_file() {
+        return Err(format!("'{}' is not a file", path.display()));
+    }
+
+    let path = match (path.canonicalize(), root.canonicalize()) {
+        (Ok(abs), Ok(root_abs)) => match abs.strip_prefix(&root_abs) {
+            Ok(rel) => root.join(rel),
+            Err(_) => abs,
+        },
+        _ => path,
+    };
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|s| s.to_lowercase());
+
+    Ok(FileInfo { path, size_bytes: metadata.len(), extension })
+}
+
+/// The classic interactive mode: pick a folder, then pick actions from a menu.
+fn run_interactive() {
+    println!("\n{}", formatter::bold("OxideClean"));
+    hint("See what's using space, find identical copies and similar documents.");
 
     loop {
-        println!("\nStart options:");
-        println!("   - Type a path to scan (e.g. ~/Downloads, . for current)");
-        println!("   - Type 'dirs' or 'ls' to browse your accessible folders");
-        println!("   - Type '0' or 'exit' to quit");
-        print!("Enter your option or path: ");
+        println!("\n{}", formatter::bold("Which folder do you want to look at?"));
+        println!("  • Type its path       e.g. ~/Downloads, or . for the current folder");
+        println!("  • Type b              to browse your folders");
+        println!("  • Type q              to quit");
+        prompt();
 
         let user_input = read_line_from_user();
 
         if is_exit_command(&user_input) {
-            println!("Goodbye! Thanks for using OxideClean.");
+            println!("Bye!");
             break;
         }
 
-        if user_input.eq_ignore_ascii_case("dirs") || user_input.eq_ignore_ascii_case("ls") {
+        if ["b", "browse", "dirs", "ls"].iter().any(|c| user_input.eq_ignore_ascii_case(c)) {
             if let Some(selected_path) = run_directory_browser() {
                 process_target_path(&selected_path);
             }
@@ -53,12 +140,13 @@ fn main() {
         let target_path = resolve_user_path(&user_input);
 
         if !target_path.exists() {
-            eprintln!("Path '{}' does not exist. Try another.", target_path.display());
+            error(&format!("Folder not found: {}", target_path.display()));
+            hint("  Check the spelling, or type b to browse your folders.");
             continue;
         }
 
         if !target_path.is_dir() {
-            eprintln!("'{}' is not a directory. Try another path.", target_path.display());
+            error(&format!("That's a file, not a folder: {}", target_path.display()));
             continue;
         }
 
@@ -85,24 +173,25 @@ fn run_directory_browser() -> Option<PathBuf> {
 
         print_accessible_directories(&current_browser_dir, &subdirs);
 
-        println!("Navigation:");
-        println!("   - Enter a folder number [#] to enter or scan it");
-        println!("   - Enter '..' to go up one level");
-        println!("   - Enter 'scan' to scan the current folder ({})", current_browser_dir.display());
-        println!("   - Enter '0', 'cancel', or 'exit' to go back");
-        print!("Select: ");
+        let here = current_browser_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("this folder");
+        if !subdirs.is_empty() {
+            println!("  • Type a number   to open that folder");
+        }
+        println!("  • Type s          to scan '{}'", here);
+        println!("  • Type ..         to go up one level");
+        println!("  • Type 0          to go back");
+        prompt();
 
         let choice = read_line_from_user();
 
-        if choice == "0"
-            || choice.eq_ignore_ascii_case("cancel")
-            || choice.eq_ignore_ascii_case("back")
-            || choice.eq_ignore_ascii_case("exit")
-        {
+        if ["0", "cancel", "back", "exit", "q"].iter().any(|c| choice.eq_ignore_ascii_case(c)) {
             return None;
         }
 
-        if choice.eq_ignore_ascii_case("scan") || choice.eq_ignore_ascii_case("analyze") {
+        if ["s", "scan", "analyze"].iter().any(|c| choice.eq_ignore_ascii_case(c)) {
             return Some(current_browser_dir);
         }
 
@@ -110,51 +199,36 @@ fn run_directory_browser() -> Option<PathBuf> {
             if let Some(parent) = current_browser_dir.parent() {
                 current_browser_dir = parent.to_path_buf();
             } else {
-                println!("You are already at the root of the file system.");
+                hint("You're already at the top.");
             }
             continue;
         }
 
-        if let Ok(idx) = choice.parse::<usize>() {
-            if idx >= 1 && idx <= subdirs.len() {
-                let chosen = &subdirs[idx - 1];
-                println!("\nWhat do you want to do with '{}'?", chosen.display());
-                println!("  [1] Scan and analyze this folder");
-                println!("  [2] Enter and browse its subfolders");
-                println!("  [0] Go back");
-                print!("        Option: ");
-
-                let sub_choice = read_line_from_user();
-                match sub_choice.as_str() {
-                    "1" => return Some(chosen.clone()),
-                    "2" => {
-                        current_browser_dir = chosen.clone();
-                    }
-                    _ => {}
-                }
-            } else {
-                println!("Number out of range.");
+        match choice.parse::<usize>() {
+            Ok(idx) if (1..=subdirs.len()).contains(&idx) => {
+                current_browser_dir = subdirs[idx - 1].clone();
             }
-        } else {
-            println!("Unrecognized option.");
+            Ok(_) => error(&format!("Pick a number from 1 to {}.", subdirs.len())),
+            Err(_) => error("That's not an option. Type a number, s, .. or 0."),
         }
     }
 }
 
 /// Scans and processes the selected path.
 fn process_target_path(target_path: &Path) {
-    println!("\n Scanning '{}' recursively...", target_path.display());
+    hint(&format!("\nScanning {} …", target_path.display()));
 
     match scan_directory(target_path) {
         Ok(files) if files.is_empty() => {
-            println!(" No files found in '{}'.", target_path.display());
+            println!("No files found in {}.", target_path.display());
+            hint("Hidden folders and system/build folders (like node_modules) are skipped.");
         }
         Ok(files) => {
             print_summary(target_path, &files);
             run_action_menu(target_path, &files);
         }
-        Err(error) => {
-            eprintln!("Scan error: {}", error);
+        Err(err) => {
+            error(&format!("Could not scan the folder: {}", err));
         }
     }
 }
@@ -169,29 +243,25 @@ fn run_action_menu(target_path: &Path, files: &[FileInfo]) {
     let mut show_full_menu = true;
     loop {
         if !show_full_menu {
-            println!(
-                "{}",
-                formatter::dim(
-                    "[1] tree  [2] largest  [3] filter  [4] duplicates  [5] subfolders  \
-                     [6] similar  [7] same name  [?] help  [0] back"
-                )
-            );
-            print!("Option: ");
+            hint("1 all files · 2 biggest · 3 by type · 4 folders · 5 identical copies");
+            hint("6 same name · 7 similar docs · ? full menu · 0 another folder");
         } else {
             show_full_menu = false;
-            println!("┌────────────────────────────────────────────────────────────┐");
-            println!("│ What do you want to do with this folder?                   │");
-            println!("│ [1] View full file tree                                    │");
-            println!("│ [2] View Top 10 largest files                              │");
-            println!("│ [3] Filter by type / extension (e.g. pdf, png)             │");
-            println!("│ [4] Find duplicates and move to Trash                      │");
-            println!("│ [5] View accessible subdirectories in this path            │");
-            println!("│ [6] Analyze content similarity between documents           │");
-            println!("│ [7] Find files with the same name                          │");
-            println!("│ [0] Back to main menu / Scan another folder                │");
-            println!("└────────────────────────────────────────────────────────────┘");
-            print!("Select an option [0-7]: ");
+            println!("\n{}", formatter::bold("What would you like to do?"));
+            hint("\n  Look around");
+            println!("    1  See every file, folder by folder");
+            println!("    2  See the 10 biggest files");
+            println!("    3  See only one type of file (pdf, jpg, mp4…)");
+            println!("    4  List the folders inside this one");
+            hint("\n  Clean up");
+            println!("    5  Find identical copies of files (and free up space)");
+            println!("    6  Find files with the same name in different places");
+            hint("\n  Compare documents");
+            println!("    7  Find documents with similar content");
+            println!();
+            println!("    0  Choose another folder        ?  Show this menu again");
         }
+        prompt();
 
         let option = read_line_from_user();
 
@@ -204,44 +274,42 @@ fn run_action_menu(target_path: &Path, files: &[FileInfo]) {
                 print_top_largest(target_path, &top_10);
             }
             "3" => {
-                println!("\nEnter the extension to search for (e.g. pdf, mov, png, jpg):");
+                println!("\nWhich type of file? (e.g. pdf, jpg, mp4)");
+                prompt();
                 let ext = read_line_from_user();
                 if ext.is_empty() {
-                    println!("No extension entered.");
+                    hint("No type entered.");
                 } else {
-                    let filtered = filter_by_extension(files, &ext);
-                    if filtered.is_empty() {
-                        println!("No files found with extension '.{}'.", ext);
-                    } else {
-                        print_filtered_files(target_path, &ext, &filtered);
-                    }
+                    show_files_by_extension(target_path, files, &ext);
                 }
             }
             "4" => {
-                handle_duplicates_and_trash(target_path, files);
-            }
-            "5" => {
                 if let Ok(subdirs) = list_accessible_subdirectories(target_path) {
                     print_accessible_directories(target_path, &subdirs);
                 } else {
-                    eprintln!(" Could not list subdirectories.");
+                    error("Could not list the folders.");
+                }
+            }
+            "5" => {
+                if let Err(err) = handle_duplicates(target_path, files, true, false) {
+                    error(&err);
+                    println!();
                 }
             }
             "6" => {
-                handle_similarity_analysis(target_path, files);
+                handle_same_name_files(target_path, files);
             }
             "7" => {
-                handle_same_name_files(target_path, files);
+                handle_similarity_analysis(target_path, files);
             }
             "?" | "help" | "menu" => {
                 show_full_menu = true;
             }
-            "0" | "exit" | "back" => {
-                println!("Returning to main menu...");
+            "0" | "exit" | "back" | "q" => {
                 break;
             }
             _ => {
-                println!("Invalid option. Please enter a number from 0 to 7.");
+                error("That's not an option. Type a number from 0 to 7, or ? to see the menu.");
             }
         }
     }
@@ -265,49 +333,45 @@ fn handle_similarity_analysis(root: &Path, files: &[FileInfo]) {
         .collect();
 
     if text_or_pdf_files.len() < 2 {
-        println!("\nAt least 2 text/PDF files are needed in this folder to compare.");
-        println!("Supported types: PDF, TXT, MD, source code (rs, py, js, c, cpp), JSON, CSV\n");
+        println!("\nThis folder needs at least 2 documents to compare.");
+        hint("Supported: PDF, TXT, MD, JSON, CSV and code files (rs, py, js, c, cpp).\n");
         return;
     }
 
-    println!("\nSelect the BASE file to compare against the others:");
-    println!("──────────────────────────────────────────────────────────────────────────");
+    header("Step 1 of 2 · Pick a document");
+    hint("It will be compared with every other document in this folder.");
 
-    let selected = match select_file_paginated(&text_or_pdf_files) {
+    let selected = match select_file_paginated(root, &text_or_pdf_files) {
         Some(f) => f,
         None => return,
     };
 
-    // Threshold guide for the user
-    println!("\nConfigure the minimum similarity threshold:");
-    println!("──────────────────────────────────────────────────────────────────────────");
-    println!("   The score combines shared vocabulary, common phrases, and length.");
-    println!("   Reference guide for choosing your threshold:");
-    println!("   ─────────────────────────────────────────────────────────────────────");
-    println!("   │  >= 70%  │ Very similar: same topic, structure, and phrasing      │");
-    println!("   │  40-69%  │ Related: shared vocabulary, different focus            │");
-    println!("   │  15-39%  │ Somewhat related: share some terms in the field        │");
-    println!("   │  < 15%   │ Distant: very little content overlap                  │");
-    println!("   ─────────────────────────────────────────────────────────────────────");
-    println!("  [1] Automatic  — Shows documents with >= 30% similarity");
-    println!("  [2] Custom     — You choose the minimum percentage");
-    print!("Option [1 or 2]: ");
+    header("Step 2 of 2 · How similar should the matches be?");
+    println!("    1  Similar or closer (30% or more)   {}", formatter::dim("← recommended"));
+    println!("    2  Only very similar (70% or more)");
+    println!("    3  Anything related (15% or more)");
+    println!("    4  Let me type a percentage");
+    hint("  Press Enter for the recommended option.");
+    prompt();
 
-    let mode_choice = read_line_from_user();
-    let threshold: f64 = match mode_choice.as_str() {
-        "2" => {
-            print!("Enter the minimum percentage (e.g. 10, 30, 50, 80): ");
-            let custom_input = read_line_from_user();
-            custom_input.parse::<f64>().unwrap_or(30.0).clamp(0.0, 100.0)
+    let threshold: f64 = match read_line_from_user().as_str() {
+        "2" => 70.0,
+        "3" => 15.0,
+        "4" => {
+            println!("Minimum percentage (0-100):");
+            prompt();
+            match read_line_from_user().trim_end_matches('%').parse::<f64>() {
+                Ok(value) => value.clamp(0.0, 100.0),
+                Err(_) => {
+                    hint("Not a number, using 30%.");
+                    30.0
+                }
+            }
         }
-        _ => 30.0, // Automatic mode: 30% is more useful than 50%
+        _ => 30.0,
     };
 
-    println!(
-        "\n Analyzing similarities against '{}' (threshold: >= {:.1}%)...",
-        selected.name(),
-        threshold
-    );
+    hint(&format!("\nComparing '{}' with the other documents …", selected.name()));
 
     let matches = find_similar_documents(selected, files, threshold);
     print_similarity_results(root, selected.name(), &matches, threshold);
@@ -317,7 +381,7 @@ fn handle_similarity_analysis(root: &Path, files: &[FileInfo]) {
 /// navigate pages or search by name before selecting.
 ///
 /// Returns the chosen file, or `None` if the user cancels.
-fn select_file_paginated<'a>(files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
+fn select_file_paginated<'a>(root: &Path, files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
     const PAGE_SIZE: usize = 20;
     let total = files.len();
     // total_pages is fixed: used in the header when no search is active.
@@ -336,58 +400,43 @@ fn select_file_paginated<'a>(files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
         let page_slice = &active_list[start..end];
 
         // Page header
-        if search_active {
-            println!(
-                "\n Search results ({} found) — Page {}/{}",
-                active_list.len(), page + 1, page_total
-            );
+        let shown = if search_active {
+            format!("{} matching your search", active_list.len())
         } else {
-            println!(
-                "\n Available files ({} total) — Page {}/{}",
-                total, page + 1, total_pages
-            );
-        }
-        println!("──────────────────────────────────────────────────────────────────────────");
-        println!("  {:<4}  {:<30}  {:<6}  {}", "#", "NAME", "TYPE", "FOLDER");
-        println!("  ────  ──────────────────────────────  ──────  ──────────────────────────");
+            plural(total, "document", "documents")
+        };
+        let page_info = if page_total > 1 {
+            format!(" · page {} of {}", page + 1, if search_active { page_total } else { total_pages })
+        } else {
+            String::new()
+        };
+        hint(&format!("\n{}{}", shown, page_info));
 
         for (i, f) in page_slice.iter().enumerate() {
-            let global_num = start + i + 1;
-            let ext = f.extension.as_deref().unwrap_or("?").to_uppercase();
-            // Show only the containing folder name to avoid cluttering the screen
-            let folder = f.path
-                .parent()
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .unwrap_or("root");
             println!(
-                "  {:<4}  {:<30}  {:<6}  {}",
-                format!("[{}]", global_num),
-                truncate(f.name(), 30),
-                ext,
-                truncate(folder, 26),
+                "  {:>3}  {:<34}  {}",
+                start + i + 1,
+                truncate(f.name(), 34),
+                formatter::dim(&truncate(&folder_of(f, root), 30)),
             );
         }
+        println!();
 
-        println!("──────────────────────────────────────────────────────────────────────────");
-        println!("Navigation:");
-
+        println!("  • Type a number   to pick that document");
         // Only show pagination options when there is more than one page
-        if page_total > 1 {
-            if page + 1 < page_total {
-                println!("  [n] Next page →");
-            }
-            if page > 0 {
-                println!("  [p] Previous page ←");
-            }
+        if page + 1 < page_total {
+            println!("  • Type n          for the next page");
+        }
+        if page > 0 {
+            println!("  • Type p          for the previous page");
         }
         if search_active {
-            println!("  [r] Reset search / show all");
+            println!("  • Type r          to show all documents again");
         } else {
-            println!("  [b] Search by file name");
+            println!("  • Type s          to search by name");
         }
-        println!("  [0] Cancel");
-        print!("Enter a number or command: ");
+        println!("  • Type 0          to cancel");
+        prompt();
 
         let input = read_line_from_user();
 
@@ -401,11 +450,12 @@ fn select_file_paginated<'a>(files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
                 current_page = page - 1;
             }
 
-            "b" => {
-                print!("Type part of the file name to search: ");
+            "s" | "b" => {
+                println!("Type part of the name:");
+                prompt();
                 let query = read_line_from_user().to_lowercase();
                 if query.is_empty() {
-                    println!("Empty search. Showing all files.");
+                    hint("Empty search, showing all documents.");
                     active_list = files.to_vec();
                     search_active = false;
                 } else {
@@ -418,11 +468,9 @@ fn select_file_paginated<'a>(files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
                     current_page = 0;
 
                     if active_list.is_empty() {
-                        println!("No files found with '{}'. Returning to full list.", query);
+                        error(&format!("No document name contains '{}'. Showing all again.", query));
                         active_list = files.to_vec();
                         search_active = false;
-                    } else {
-                        println!(" {} file(s) found with '{}'.", active_list.len(), query);
                     }
                 }
             }
@@ -438,13 +486,13 @@ fn select_file_paginated<'a>(files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
                 if let Ok(num) = raw.parse::<usize>() {
                     if num >= 1 && num <= active_list.len() {
                         let chosen = active_list[num - 1];
-                        println!("\n Selected: {} ({})", chosen.name(), chosen.path.display());
+                        println!("Picked: {}", formatter::bold(chosen.name()));
                         return Some(chosen);
                     } else {
-                        println!("Number out of range (1-{}). Try again.", active_list.len());
+                        error(&format!("Pick a number from 1 to {}.", active_list.len()));
                     }
                 } else {
-                    println!("Unrecognized option. Use a number, 'n', 'p', 'b', 'r', or '0'.");
+                    error("That's not an option. Type a number, or one of the letters shown.");
                 }
             }
         }
@@ -453,49 +501,83 @@ fn select_file_paginated<'a>(files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
 
 /// Finds and displays files that share the same name within the scanned folder.
 ///
-/// Unlike exact duplicates (option 4), content is not analyzed here:
+/// Unlike identical copies (option 5), content is not analyzed here:
 /// two files with the same name but different content (e.g. different versions
 /// of a document) will also appear in the list.
 fn handle_same_name_files(root: &Path, files: &[FileInfo]) {
-    println!("\nSearching for files with the same name...");
     let groups = find_same_name_files(files);
     print_same_name_results(root, &groups);
 }
 
-/// Runs the SHA-256 duplicate analysis and offers to move them to the Trash.
-fn handle_duplicates_and_trash(root: &Path, files: &[FileInfo]) {
-    println!("\nCalculating SHA-256 hashes to find exact duplicates...");
+/// Prints the files matching an extension, or a notice when there are none.
+fn show_files_by_extension(root: &Path, files: &[FileInfo], ext: &str) {
+    // Accept both "pdf" and ".pdf"
+    let ext = ext.trim().trim_start_matches('.');
+    let filtered = filter_by_extension(files, ext);
+    if filtered.is_empty() {
+        println!("No .{} files in this folder.", ext);
+    } else {
+        print_filtered_files(root, ext, &filtered);
+    }
+}
+
+/// Runs the SHA-256 duplicate analysis and prints the groups.
+///
+/// With `offer_trash`, the redundant copies are then moved to the Trash after
+/// a y/N confirmation, or straight away with `assume_yes`. Without a terminal
+/// to ask on and without `assume_yes`, nothing is deleted and an error is returned.
+fn handle_duplicates(
+    root: &Path,
+    files: &[FileInfo],
+    offer_trash: bool,
+    assume_yes: bool,
+) -> Result<(), String> {
+    hint("\nComparing file contents …");
     let duplicate_groups = find_exact_duplicates(files);
 
     if duplicate_groups.is_empty() {
-        println!("Great! No exact duplicate files were found in this folder.\n");
-        return;
+        println!("No identical copies found. Nothing to clean up here.\n");
+        return Ok(());
     }
 
     print_exact_duplicates(root, &duplicate_groups);
 
-    let files_to_trash: Vec<FileInfo> = duplicate_groups
-        .iter()
-        .flat_map(|g| g.duplicates.clone())
-        .collect();
+    if !offer_trash {
+        return Ok(());
+    }
 
-    println!("Do you want to move these {} duplicate file(s) to the Trash?", files_to_trash.len());
-    println!("Enter 'y' or 'yes' to confirm, anything else to cancel:");
+    let copies: usize = duplicate_groups.iter().map(|g| g.duplicates.len()).sum();
 
-    let confirmation = read_line_from_user();
-
-    if confirmation.eq_ignore_ascii_case("y") || confirmation.eq_ignore_ascii_case("yes") {
-        match send_files_to_trash(&files_to_trash) {
-            Ok(count) => {
-                println!("\nSuccess! {} file(s) moved to the Trash.", count);
-                println!("You can restore them from the Trash if needed.\n");
-            }
-            Err(err) => {
-                eprintln!("\n{}", err);
-            }
+    if !assume_yes {
+        if !io::stdin().is_terminal() {
+            return Err(
+                "Nothing was moved: there's no terminal to ask for confirmation \
+                 (pass --yes to skip it)"
+                    .to_string(),
+            );
         }
+
+        println!(
+            "Move the {} to the Trash? You can restore {} from there later.",
+            plural(copies, "extra copy", "extra copies"),
+            if copies == 1 { "it" } else { "them" }
+        );
+        hint("  Type y to move them, or press Enter to leave everything as it is.");
+        prompt();
+        let confirmation = read_line_from_user();
+        if !(confirmation.eq_ignore_ascii_case("y") || confirmation.eq_ignore_ascii_case("yes")) {
+            println!("Nothing was moved.\n");
+            return Ok(());
+        }
+    }
+
+    let report = trash_duplicates(&duplicate_groups);
+    print_trash_report(root, &report);
+
+    if report.failed.is_empty() {
+        Ok(())
     } else {
-        println!("\nOperation cancelled. No files were modified.\n");
+        Err(format!("{} file(s) could not be moved to the Trash", report.failed.len()))
     }
 }
 
@@ -508,15 +590,20 @@ fn read_line_from_user() -> String {
     // Flush so prompts written with `print!` appear before the user types
     let _ = io::stdout().flush();
     let mut buffer = String::new();
-    io::stdin()
+    let bytes_read = io::stdin()
         .read_line(&mut buffer)
         .expect("Failed to read user input");
+    // End of input (Ctrl+D or a closed pipe): exit instead of looping on empty answers
+    if bytes_read == 0 {
+        println!();
+        std::process::exit(0);
+    }
     buffer.trim().to_string()
 }
 
 /// Returns true if the given input matches a quit command.
 fn is_exit_command(input: &str) -> bool {
-    input == "0" || input.eq_ignore_ascii_case("exit")
+    ["0", "q", "quit", "exit"].iter().any(|c| input.eq_ignore_ascii_case(c))
 }
 
 /// Converts user input into a valid `PathBuf`, expanding `~` to the home directory.
@@ -598,6 +685,47 @@ mod tests {
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].original.path, older);
         assert_eq!(groups[0].duplicates[0].path, newer);
+    }
+
+    /// Creates an empty, unique temp directory for a test.
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("oxide_clean_{}_{}", name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_hardlinks_are_not_duplicates() {
+        let dir = temp_dir("hardlinks");
+        std::fs::write(dir.join("a.txt"), "same content").unwrap();
+        std::fs::hard_link(dir.join("a.txt"), dir.join("b.txt")).unwrap();
+
+        let groups = find_exact_duplicates(&scan_directory(&dir).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert!(groups.is_empty(), "hardlinks to one file must not be reported as duplicates");
+    }
+
+    #[test]
+    fn test_trash_skips_group_when_kept_copy_changed() {
+        let dir = temp_dir("changed_original");
+        std::fs::write(dir.join("a.txt"), "same content").unwrap();
+        std::fs::write(dir.join("b.txt"), "same content").unwrap();
+
+        let groups = find_exact_duplicates(&scan_directory(&dir).unwrap());
+        assert_eq!(groups.len(), 1);
+        // The kept copy is edited after the scan: its duplicate must survive
+        std::fs::write(&groups[0].original.path, "edited after scan").unwrap();
+
+        let report = trash_duplicates(&groups);
+        let duplicate_still_there = groups[0].duplicates[0].path.exists();
+        std::fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(report.moved, 0);
+        assert_eq!(report.failed.len(), 1);
+        assert!(duplicate_still_there);
     }
 
     #[test]

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use crate::actions::{DuplicateGroup, SameNameGroup};
+use crate::actions::{DuplicateGroup, SameNameGroup, TrashReport};
 use crate::models::FileInfo;
 use crate::similarity::SimilarityMatch;
 
@@ -42,13 +42,33 @@ fn green(text: &str) -> String { paint("32", text) }
 fn yellow(text: &str) -> String { paint("33", text) }
 
 /// Prints a bold section title followed by a rule.
-fn header(title: &str) {
+pub fn header(title: &str) {
     println!("\n{}", bold(title));
     rule();
 }
 
 fn rule() {
     println!("{}", dim(&"─".repeat(WIDTH)));
+}
+
+/// Prints the input marker; the answer is typed on the same line.
+pub fn prompt() {
+    print!("{} ", bold("›"));
+}
+
+/// Prints a secondary, explanatory line.
+pub fn hint(text: &str) {
+    println!("{}", dim(text));
+}
+
+/// Prints a problem the user should notice.
+pub fn error(text: &str) {
+    eprintln!("{} {}", red("✗"), text);
+}
+
+/// "1 file" / "3 files".
+pub fn plural(n: usize, singular: &str, plural: &str) -> String {
+    format!("{} {}", n, if n == 1 { singular } else { plural })
 }
 
 /// Truncates a string to the given maximum character count, appending '…' if cut.
@@ -64,14 +84,14 @@ pub fn truncate(s: &str, max: usize) -> String {
 /// Shows a path relative to the scanned root (e.g. "./photos/2024").
 fn relative(path: &Path, root: &Path) -> String {
     match path.strip_prefix(root) {
-        Ok(rel) if rel.as_os_str().is_empty() => ".".to_string(),
+        Ok(rel) if rel.as_os_str().is_empty() => "(this folder)".to_string(),
         Ok(rel) => format!("./{}", rel.display()),
         Err(_) => path.display().to_string(),
     }
 }
 
 /// Relative folder that contains a file.
-fn folder_of(file: &FileInfo, root: &Path) -> String {
+pub fn folder_of(file: &FileInfo, root: &Path) -> String {
     file.path
         .parent()
         .map(|p| relative(p, root))
@@ -115,9 +135,9 @@ pub fn print_summary(root: &Path, files: &[FileInfo]) {
 
     header(&format!("Scan complete: {}", root.display()));
     println!(
-        "  {} files · {} folders · {}",
-        bold(&files.len().to_string()),
-        folder_count,
+        "  {} in {} · {} in total",
+        bold(&plural(files.len(), "file", "files")),
+        plural(folder_count, "folder", "folders"),
         bold(&format_size(total_size))
     );
 
@@ -128,7 +148,7 @@ pub fn print_summary(root: &Path, files: &[FileInfo]) {
         let first = parts.next();
         let key = match (first, parts.next()) {
             (Some(dir), Some(_)) => format!("./{}", dir.as_os_str().to_string_lossy()),
-            _ => "(files in root)".to_string(),
+            _ => "(directly in this folder)".to_string(),
         };
         let entry = by_folder.entry(key).or_default();
         entry.0 += file.size_bytes;
@@ -143,8 +163,8 @@ pub fn print_summary(root: &Path, files: &[FileInfo]) {
         entry.1 += 1;
     }
 
-    print_ranking("Largest folders", by_folder, total_size);
-    print_ranking("Largest file types", by_type, total_size);
+    print_ranking("Where the space goes, by folder", by_folder, total_size);
+    print_ranking("Where the space goes, by file type", by_type, total_size);
     println!();
 }
 
@@ -160,7 +180,7 @@ fn print_ranking(title: &str, map: HashMap<String, (u64, usize)>, total_size: u6
             truncate(name, 30),
             format_size(*size),
             bar(*size as f64, total_size as f64, 12),
-            dim(&format!("{} files", count))
+            dim(&plural(*count, "file", "files"))
         );
     }
     if rows.len() > SUMMARY_ROWS {
@@ -198,7 +218,7 @@ pub fn print_tree(root: &Path, files: &[FileInfo]) {
     let total_size: u64 = files.iter().map(|f| f.size_bytes).sum();
     let grouped = group_by_folder(files);
 
-    header(&format!("File tree: {}", root.display()));
+    header(&format!("All files in {}, folder by folder", root.display()));
 
     for (folder, folder_files) in &grouped {
         let folder_size: u64 = folder_files.iter().map(|f| f.size_bytes).sum();
@@ -206,7 +226,11 @@ pub fn print_tree(root: &Path, files: &[FileInfo]) {
         println!(
             "\n{}  {}",
             bold(&relative(folder, root)),
-            dim(&format!("{} files · {}", folder_files.len(), format_size(folder_size)))
+            dim(&format!(
+                "{} · {}",
+                plural(folder_files.len(), "file", "files"),
+                format_size(folder_size)
+            ))
         );
 
         for (index, file) in folder_files.iter().enumerate() {
@@ -224,16 +248,16 @@ pub fn print_tree(root: &Path, files: &[FileInfo]) {
     println!();
     rule();
     println!(
-        "Total: {} files in {} folders · {}\n",
-        files.len(),
-        grouped.len(),
+        "Total: {} in {} · {}\n",
+        plural(files.len(), "file", "files"),
+        plural(grouped.len(), "folder", "folders"),
         bold(&format_size(total_size))
     );
 }
 
 /// Displays the top largest files table.
 pub fn print_top_largest(root: &Path, files: &[FileInfo]) {
-    header("Top largest files");
+    header(&format!("The {} biggest files", files.len()));
     println!("{}", dim(&format!("{:<4} {:<NAME_W$} {:>10}  {}", "#", "NAME", "SIZE", "FOLDER")));
 
     for (i, file) in files.iter().enumerate() {
@@ -251,7 +275,7 @@ pub fn print_top_largest(root: &Path, files: &[FileInfo]) {
 /// Displays the list of files filtered by extension.
 pub fn print_filtered_files(root: &Path, ext: &str, files: &[FileInfo]) {
     let total_size: u64 = files.iter().map(|f| f.size_bytes).sum();
-    header(&format!(".{} files ({} found)", ext, files.len()));
+    header(&format!(".{} files: {} found", ext, files.len()));
     println!("{}", dim(&format!("{:<NAME_W$} {:>10}  {}", "NAME", "SIZE", "FOLDER")));
 
     for file in files {
@@ -276,7 +300,9 @@ pub fn print_exact_duplicates(root: &Path, groups: &[DuplicateGroup]) {
     let mut total_wasted: u64 = 0;
     let mut total_dupe_files: usize = 0;
 
-    header("Duplicate files (identical SHA-256)");
+    header("Identical files");
+    hint("These files have exactly the same content. In each group the oldest");
+    hint("copy is kept; the extra copies can be moved to the Trash.");
 
     for (i, group) in groups.iter().enumerate() {
         let wasted_in_group = group.file_size * group.duplicates.len() as u64;
@@ -287,32 +313,54 @@ pub fn print_exact_duplicates(root: &Path, groups: &[DuplicateGroup]) {
             "\n{}  {}",
             bold(&format!("Group {}", i + 1)),
             dim(&format!(
-                "{} each · {} wasted",
+                "{} · {} each · {} can be freed",
+                group.original.name(),
                 format_size(group.file_size),
                 format_size(wasted_in_group)
             ))
         );
-        println!("  {} {}", green("keep  "), relative(&group.original.path, root));
+        println!("  {}  {}", green("keep "), relative(&group.original.path, root));
         for dupe in &group.duplicates {
-            println!("  {} {}", red("delete"), relative(&dupe.path, root));
+            println!("  {}  {}", red("extra"), relative(&dupe.path, root));
         }
     }
 
     println!();
     rule();
     println!(
-        "{} duplicate file(s) in {} group(s) · {} recoverable\n",
-        total_dupe_files,
-        groups.len(),
+        "{} in {} · {} can be freed\n",
+        plural(total_dupe_files, "extra copy", "extra copies"),
+        plural(groups.len(), "group", "groups"),
         yellow(&bold(&format_size(total_wasted)))
     );
+}
+
+/// Displays what happened when moving duplicates to the Trash.
+pub fn print_trash_report(root: &Path, report: &TrashReport) {
+    println!(
+        "\n{} moved to the Trash · {} freed",
+        bold(&plural(report.moved, "file", "files")),
+        bold(&format_size(report.freed_bytes))
+    );
+    if report.moved > 0 {
+        hint("Changed your mind? You can restore them from the Trash.");
+    }
+
+    if !report.failed.is_empty() {
+        let title = format!("{} not moved:", plural(report.failed.len(), "file was", "files were"));
+        println!("\n{}", yellow(&bold(&title)));
+        for (path, reason) in &report.failed {
+            println!("  {} {}", relative(path, root), dim(&format!("— {}", reason)));
+        }
+    }
+    println!();
 }
 
 /// Displays the interactive list of accessible directories.
 pub fn print_accessible_directories(parent_dir: &Path, dirs: &[PathBuf]) {
     header(&format!("Folders in {}", parent_dir.display()));
     if dirs.is_empty() {
-        println!("{}", dim("No subfolders here."));
+        hint("There are no folders inside this one.");
     } else {
         for (i, dir) in dirs.iter().enumerate() {
             let folder_name = dir.file_name().and_then(|n| n.to_str()).unwrap_or("folder");
@@ -330,20 +378,12 @@ pub fn print_similarity_results(
     threshold: f64,
 ) {
     header(&format!("Documents similar to '{}'", target_name));
-    println!(
-        "{}",
-        dim(&format!(
-            "Threshold >= {:.1}% · score = 50% vocabulary + 40% phrases + 10% length",
-            threshold
-        ))
-    );
+    hint(&format!("Showing matches of {:.0}% or more.", threshold));
+    hint("70%+ very similar · 40-69% related · below 40% loosely related");
 
     if matches.is_empty() {
-        println!("\nNo documents found with similarity >= {:.1}%.", threshold);
-        println!("Suggestions:");
-        println!("  • Lower the threshold (e.g. 10% or 20%) to catch weaker similarities.");
-        println!("  • Make sure the files contain real text (not scanned images).");
-        println!("  • Make sure the folder contains other text/PDF documents.\n");
+        println!("\nNo document is at least {:.0}% similar.", threshold);
+        hint("Try a lower percentage. Scanned PDFs (images of text) can't be compared.\n");
         return;
     }
 
@@ -364,9 +404,9 @@ pub fn print_similarity_results(
         println!(
             "        {}",
             dim(&format!(
-                "{} shared words · {} shared phrases · {}",
-                m.shared_keyword_count,
-                m.shared_bigram_count,
+                "{} and {} in common · {}",
+                plural(m.shared_keyword_count, "word", "words"),
+                plural(m.shared_bigram_count, "phrase", "phrases"),
                 folder_of(&m.candidate_file, root)
             ))
         );
@@ -384,12 +424,13 @@ pub fn print_same_name_results(root: &Path, groups: &[SameNameGroup]) {
     let total_files: usize = groups.iter().map(|g| g.files.len()).sum();
 
     header("Files with the same name");
+    hint("Same name doesn't mean same content: these may be different versions.");
 
     for group in groups {
         println!(
             "\n{}  {}",
             bold(&group.shared_name),
-            dim(&format!("{} copies", group.files.len()))
+            dim(&format!("in {} places", group.files.len()))
         );
         for file in &group.files {
             println!(
@@ -402,9 +443,10 @@ pub fn print_same_name_results(root: &Path, groups: &[SameNameGroup]) {
 
     println!();
     rule();
-    println!("{} repeated names · {} files total", groups.len(), total_files);
     println!(
-        "{}\n",
-        dim("Tip: option [4] checks whether they also share the same content.")
+        "{} · {} in total",
+        plural(groups.len(), "repeated name", "repeated names"),
+        plural(total_files, "file", "files")
     );
+    hint("Tip: \"Find identical copies\" (option 5) shows which ones really are the same.\n");
 }

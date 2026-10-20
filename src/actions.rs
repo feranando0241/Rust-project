@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 use crate::models::FileInfo;
 
@@ -9,9 +9,7 @@ use crate::models::FileInfo;
 #[derive(Debug, Clone)]
 pub struct DuplicateGroup {
     /// SHA-256 hash shared by all files in the group.
-    /// Not displayed directly in the UI, but documents the grouping origin
-    /// and is useful for future extensions (e.g. report export).
-    #[allow(dead_code)]
+    /// Re-checked against the kept file right before trashing its copies.
     pub hash: String,
     pub file_size: u64,
     /// The file to keep: the oldest by modification time.
@@ -82,8 +80,16 @@ pub fn find_exact_duplicates(files: &[FileInfo]) -> Vec<DuplicateGroup> {
 
     for candidates in candidate_groups {
         let mut by_hash: HashMap<String, Vec<FileInfo>> = HashMap::new();
+        let mut seen_identities = HashSet::new();
 
         for file in candidates {
+            // Hardlinks share the same data on disk: trashing one frees nothing,
+            // so only the first path to each underlying file is considered.
+            if let Some(identity) = file_identity(&file.path)
+                && !seen_identities.insert(identity)
+            {
+                continue;
+            }
             if let Ok(hash) = calculate_sha256(&file.path) {
                 by_hash.entry(hash).or_default().push(file);
             }
@@ -121,26 +127,77 @@ pub fn find_exact_duplicates(files: &[FileInfo]) -> Vec<DuplicateGroup> {
     duplicate_groups
 }
 
-/// Safely moves a list of files to the operating system Trash.
-pub fn send_files_to_trash(files: &[FileInfo]) -> Result<usize, String> {
-    let mut deleted_count = 0;
+/// Identifies the underlying file on disk (device + inode), so different
+/// paths to the same data (hardlinks) can be recognized.
+#[cfg(unix)]
+fn file_identity(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
 
-    for file in files {
-        match trash::delete(&file.path) {
-            Ok(_) => {
-                deleted_count += 1;
+// ponytail: no hardlink detection off Unix (Windows file IDs need an unstable API);
+// add it via GetFileInformationByHandle if Windows support matters.
+#[cfg(not(unix))]
+fn file_identity(_path: &Path) -> Option<(u64, u64)> {
+    None
+}
+
+/// Outcome of moving duplicates to the Trash. Every file is attempted;
+/// one failure doesn't stop the rest.
+#[derive(Debug, Default)]
+pub struct TrashReport {
+    pub moved: usize,
+    pub freed_bytes: u64,
+    /// Files that were not moved, with the reason.
+    pub failed: Vec<(PathBuf, String)>,
+}
+
+/// Moves the redundant copies of every group to the operating system Trash.
+///
+/// Files can change while the user reads the list, so right before acting:
+/// - the kept file is re-hashed; if it is missing or its content changed, the
+///   whole group is skipped, so the last good copy is never trashed;
+/// - each copy must still have the scanned size, otherwise it is skipped.
+pub fn trash_duplicates(groups: &[DuplicateGroup]) -> TrashReport {
+    let mut report = TrashReport::default();
+
+    for group in groups {
+        let original_intact = calculate_sha256(&group.original.path)
+            .map(|hash| hash == group.hash)
+            .unwrap_or(false);
+        if !original_intact {
+            let reason = format!(
+                "skipped: the kept copy '{}' is missing or changed since the scan",
+                group.original.path.display()
+            );
+            for dupe in &group.duplicates {
+                report.failed.push((dupe.path.clone(), reason.clone()));
             }
-            Err(err) => {
-                return Err(format!(
-                    "Error moving '{}' to Trash: {}",
-                    file.name(),
-                    err
-                ));
+            continue;
+        }
+
+        for dupe in &group.duplicates {
+            // ponytail: size check only (cheap); re-hash each copy too if edits
+            // between scan and confirmation turn out to matter.
+            let current_size = fs::metadata(&dupe.path).map(|m| m.len()).ok();
+            if current_size != Some(group.file_size) {
+                report
+                    .failed
+                    .push((dupe.path.clone(), "skipped: missing or changed since the scan".to_string()));
+                continue;
+            }
+
+            match trash::delete(&dupe.path) {
+                Ok(()) => {
+                    report.moved += 1;
+                    report.freed_bytes += group.file_size;
+                }
+                Err(err) => report.failed.push((dupe.path.clone(), err.to_string())),
             }
         }
     }
 
-    Ok(deleted_count)
+    report
 }
 
 /// Represents a group of files that share the same filename.
@@ -159,7 +216,7 @@ pub struct SameNameGroup {
 /// 2. Returns only groups with 2 or more files, sorted by number of matches descending.
 ///
 /// ### Difference from exact duplicates:
-/// - **Exact duplicates** (option 4): same content verified by SHA-256 hash.
+/// - **Identical copies** (option 5): same content verified by SHA-256 hash.
 /// - **Same name** (this function): same filename, content may differ.
 ///
 /// Useful for detecting different versions of the same file spread across multiple folders.

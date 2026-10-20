@@ -11,10 +11,10 @@ A fast, modular file scanner and organizer built in Rust. OxideClean helps you u
 | 1 | **File tree view** | Recursive scan grouped by folder, with sizes and extensions |
 | 2 | **Top 10 largest files** | Quickly spot what is eating your disk space |
 | 3 | **Filter by extension** | Find all `.pdf`, `.mp4`, `.zip`, or any other type |
-| 4 | **Exact duplicate detection** | SHA-256 hash comparison — finds byte-for-byte identical files and moves them to Trash |
-| 5 | **Directory browser** | Interactive navigator to explore subdirectories before scanning |
-| 6 | **Document similarity** | Composite content analysis (vocabulary + bigrams + length) to find similar PDFs, text files, and source code |
-| 7 | **Same-name file finder** | Groups files that share a filename across different folders |
+| 4 | **Folder listing** | List the folders inside the scanned one (a folder browser is also available before scanning) |
+| 5 | **Identical copies** | SHA-256 hash comparison — finds byte-for-byte identical files and moves the extra copies to Trash |
+| 6 | **Same-name file finder** | Groups files that share a filename across different folders |
+| 7 | **Document similarity** | Composite content analysis (vocabulary + bigrams + length) to find similar PDFs, text files, and source code |
 
 ---
 
@@ -53,50 +53,74 @@ oxide_clean
 
 ---
 
-## Usage
+## Command-line usage
+
+Run without arguments for the interactive menus, or pass a path and one action to run it directly and exit:
+
+```bash
+oxide_clean ~/Downloads                      # scan, show summary, open the action menu
+oxide_clean ~/Downloads --largest 20         # top 20 largest files (default 10)
+oxide_clean ~/Downloads --ext pdf            # all PDF files
+oxide_clean ~/Downloads --dupes              # list exact duplicates (read-only)
+oxide_clean ~/Downloads --dupes --trash      # move duplicate copies to Trash (asks first)
+oxide_clean ~/Downloads --dupes --trash -y   # same, without asking
+oxide_clean ~/Downloads --same-name          # files that share a name
+oxide_clean ~/Documents --similar thesis.pdf --threshold 50
+oxide_clean --help
+```
+
+- `--dupes` on its own never deletes anything.
+- `--trash` always asks for confirmation unless `--yes`/`-y` is given. Without a terminal to ask on (e.g. in a script), it refuses and exits with an error.
+- Output can be piped or redirected (`> report.txt`); colors turn off automatically.
+- Exit codes: `0` success, `1` runtime error, `2` invalid arguments.
+
+See [ADR-0001](docs/adr/0001-cli-arguments.md) for the design rationale.
+
+---
+
+## Usage (interactive)
 
 When launched, OxideClean presents a startup prompt:
 
 ```
-OxideClean — File Organizer & Scanner
-=========================================
+OxideClean
+See what's using space, find identical copies and similar documents.
 
-Start options:
-   - Type a path to scan (e.g. ~/Downloads, . for current)
-   - Type 'dirs' or 'ls' to browse your accessible folders
-   - Type '0' or 'exit' to quit
-Enter your option or path:
+Which folder do you want to look at?
+  • Type its path       e.g. ~/Downloads, or . for the current folder
+  • Type b              to browse your folders
+  • Type q              to quit
+›
 ```
 
-### Quick start examples
+After scanning, you get a short summary of where the space goes, then the action menu:
 
 ```
-~/Downloads     — scan your Downloads folder
-.               — scan the current directory
-dirs            — browse folders interactively
+What would you like to do?
+
+  Look around
+    1  See every file, folder by folder
+    2  See the 10 biggest files
+    3  See only one type of file (pdf, jpg, mp4…)
+    4  List the folders inside this one
+
+  Clean up
+    5  Find identical copies of files (and free up space)
+    6  Find files with the same name in different places
+
+  Compare documents
+    7  Find documents with similar content
+
+    0  Choose another folder        ?  Show this menu again
 ```
 
-After scanning, you are presented with the action menu:
-
-```
-┌────────────────────────────────────────────────────────────┐
-│ What do you want to do with this folder?                   │
-│ [1] View full file tree                                    │
-│ [2] View Top 10 largest files                              │
-│ [3] Filter by type / extension (e.g. pdf, png)             │
-│ [4] Find duplicates and move to Trash                      │
-│ [5] View accessible subdirectories in this path            │
-│ [6] Analyze content similarity between documents           │
-│ [7] Find files with the same name                          │
-│ [0] Back to main menu / Scan another folder                │
-└────────────────────────────────────────────────────────────┘
-```
+After the first action, the menu shrinks to a two-line reminder; type `?` to see the full one again.
 
 ---
 
 ## How the similarity engine works
 
-Option **[6]** compares documents using a **Composite Score**:
+Option **[7]** compares documents using a **Composite Score**:
 
 | Weight | Metric | What it measures |
 |--------|--------|-----------------|
@@ -119,7 +143,7 @@ Option **[6]** compares documents using a **Composite Score**:
 
 ## How duplicate detection works
 
-Option **[4]** uses a two-step approach for accuracy and speed:
+Option **[5]** uses a two-step approach for accuracy and speed:
 
 1. **Group by file size** — files with different sizes cannot be identical (instant filter, zero I/O cost).
 2. **SHA-256 hash comparison** — only files with the same size are hashed; identical hashes mean byte-for-byte duplicates.
@@ -164,6 +188,8 @@ The test suite covers:
 - `test_is_exit_command` — exit command recognition
 - `test_should_ignore_directory` — ignore-rules logic
 - `test_similarity_algorithm` — Jaccard similarity calculation
+- `test_duplicates_keep_oldest` — the oldest copy is the one kept
+- `cli::tests` — command-line parsing: valid combinations and usage errors
 
 ---
 

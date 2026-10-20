@@ -1,6 +1,6 @@
 # ADR-0001: Add command-line arguments alongside the interactive menus
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-20
 **Deciders:** M4DEN5K (project owner)
 
@@ -121,8 +121,8 @@ These rules are the same under B or C, so moving to `clap` later doesn't change 
 
 ## Action Items
 
-1. [ ] Split the `handle_*` functions in `main.rs` so the logic doesn't read stdin directly. The menu path and the CLI path then call the same functions, and only the menu path prompts.
-2. [ ] Add `parse_args()` returning a small `enum Command`, plus `--help` text and exit codes (0 ok, 1 runtime error, 2 usage error).
-3. [ ] Put the deletion rules above in one place: `--trash` needs a confirmation or `--yes`, and the app refuses when stdin is not a TTY.
-4. [ ] Add tests for `parse_args` (valid combinations, unknown flag, missing value) and for the refusal to delete without a TTY.
-5. [ ] Update the README with a "Command-line usage" section.
+1. [x] Split the `handle_*` functions in `main.rs` so the logic doesn't read stdin directly. The menu path and the CLI path then call the same functions, and only the menu path prompts.
+2. [x] Add `parse_args()` returning a small `enum Command`, plus `--help` text and exit codes (0 ok, 1 runtime error, 2 usage error).
+3. [x] Put the deletion rules above in one place: `--trash` needs a confirmation or `--yes`, and the app refuses when stdin is not a TTY.
+4. [x] Add tests for `parse_args` (valid combinations, unknown flag, missing value). The refusal to delete without a TTY was verified by hand; there is no automated test because it would need a fake TTY.
+5. [x] Update the README with a "Command-line usage" section.
