@@ -118,9 +118,9 @@ pub fn list_accessible_subdirectories(dir_path: &Path) -> io::Result<Vec<PathBuf
     let mut dirs = Vec::new();
     let entries = fs::read_dir(dir_path)?;
 
-    for entry in entries {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
+    // Unreadable entries are skipped instead of failing the whole listing
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
             let file_name = entry.file_name();
             let name_str = file_name.to_str().unwrap_or("");
             if !should_ignore_directory(name_str) {
@@ -148,9 +148,11 @@ fn scan_recursive(current_path: &Path, files: &mut Vec<FileInfo>) -> io::Result<
         Err(_) => return Ok(()), // No read permission — skip silently
     };
 
-    for entry in entries {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
+    // Entries that vanish or can't be inspected mid-scan are skipped silently
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
         let path = entry.path();
         let file_name = entry.file_name();
         let name_str = file_name.to_str().unwrap_or("");
@@ -165,7 +167,10 @@ fn scan_recursive(current_path: &Path, files: &mut Vec<FileInfo>) -> io::Result<
                 continue;
             }
 
-            let size_bytes = entry.metadata()?.len();
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            let size_bytes = metadata.len();
             let extension = path
                 .extension()
                 .and_then(|ext| ext.to_str())

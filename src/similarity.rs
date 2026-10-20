@@ -63,7 +63,13 @@ pub fn extract_text_from_file(path: &Path) -> Option<String> {
         .unwrap_or_default();
 
     if extension == "pdf" {
-        pdf_extract::extract_text(path).ok()
+        // pdf-extract panics on some malformed PDFs: catch it and treat the file
+        // as unreadable. The panic hook is silenced so no backtrace hits the screen.
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let result = std::panic::catch_unwind(|| pdf_extract::extract_text(path));
+        std::panic::set_hook(previous_hook);
+        result.ok()?.ok()
     } else {
         fs::read_to_string(path).ok()
     }
@@ -262,7 +268,7 @@ pub fn find_similar_documents(
         let ext = candidate.extension.as_deref().unwrap_or("").to_lowercase();
         let is_text_file = matches!(
             ext.as_str(),
-            "pdf" | "txt" | "md" | "rs" | "json" | "csv" | "py" | "js" | "c" | "cpp" | "docx"
+            "pdf" | "txt" | "md" | "rs" | "json" | "csv" | "py" | "js" | "c" | "cpp"
         );
         if !is_text_file {
             continue;

@@ -104,7 +104,7 @@ Option **[6]** compares documents using a **Composite Score**:
 | 40% | Bigrams (Jaccard) | Shared 2-word phrases — indicates shared structure |
 | 10% | Length ratio | Penalizes comparing a 10-word file to a 10,000-word file |
 
-**Supported file types:** PDF, TXT, MD, JSON, CSV, RS, PY, JS, C, CPP, DOCX
+**Supported file types:** PDF, TXT, MD, JSON, CSV, RS, PY, JS, C, CPP
 
 **Threshold guide:**
 

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;
 use sha2::{Digest, Sha256};
@@ -14,7 +14,7 @@ pub struct DuplicateGroup {
     #[allow(dead_code)]
     pub hash: String,
     pub file_size: u64,
-    /// The file to keep (typically the oldest or the first in the list).
+    /// The file to keep: the oldest by modification time.
     pub original: FileInfo,
     /// The redundant files that are candidates to be sent to the Trash.
     pub duplicates: Vec<FileInfo>,
@@ -89,8 +89,14 @@ pub fn find_exact_duplicates(files: &[FileInfo]) -> Vec<DuplicateGroup> {
             }
         }
 
-        for (hash, matching_files) in by_hash {
+        for (hash, mut matching_files) in by_hash {
             if matching_files.len() > 1 {
+                // Keep the oldest file (by modification time); ties and files
+                // without readable timestamps fall back to path order.
+                matching_files.sort_by_cached_key(|f| {
+                    let modified = fs::metadata(&f.path).and_then(|m| m.modified()).ok();
+                    (modified.is_none(), modified, f.path.clone())
+                });
                 let file_size = matching_files[0].size_bytes;
                 let original = matching_files[0].clone();
                 let duplicates = matching_files[1..].to_vec();

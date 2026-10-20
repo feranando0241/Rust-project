@@ -8,7 +8,7 @@ mod formatter;
 mod actions;
 mod similarity;
 
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use actions::{
@@ -17,7 +17,8 @@ use actions::{
 };
 use formatter::{
     print_accessible_directories, print_exact_duplicates, print_filtered_files,
-    print_same_name_results, print_similarity_results, print_top_largest, print_tree,
+    print_same_name_results, print_similarity_results, print_summary, print_top_largest,
+    print_tree, truncate,
 };
 use models::FileInfo;
 use scanner::{list_accessible_subdirectories, scan_directory};
@@ -149,7 +150,7 @@ fn process_target_path(target_path: &Path) {
             println!(" No files found in '{}'.", target_path.display());
         }
         Ok(files) => {
-            print_tree(target_path, &files);
+            print_summary(target_path, &files);
             run_action_menu(target_path, &files);
         }
         Err(error) => {
@@ -164,19 +165,33 @@ fn process_target_path(target_path: &Path) {
 
 /// Displays and runs the action sub-menu for the currently scanned folder.
 fn run_action_menu(target_path: &Path, files: &[FileInfo]) {
+    // Full menu the first time (or on '?'); a compact one-liner afterwards
+    let mut show_full_menu = true;
     loop {
-        println!("┌────────────────────────────────────────────────────────────┐");
-        println!("│ What do you want to do with this folder?                   │");
-        println!("│ [1] View full file tree                                    │");
-        println!("│ [2] View Top 10 largest files                              │");
-        println!("│ [3] Filter by type / extension (e.g. pdf, png)             │");
-        println!("│ [4] Find duplicates and move to Trash                      │");
-        println!("│ [5] View accessible subdirectories in this path            │");
-        println!("│ [6] Analyze content similarity between documents           │");
-        println!("│ [7] Find files with the same name                          │");
-        println!("│ [0] Back to main menu / Scan another folder                │");
-        println!("└────────────────────────────────────────────────────────────┘");
-        print!("Select an option [0-7]: ");
+        if !show_full_menu {
+            println!(
+                "{}",
+                formatter::dim(
+                    "[1] tree  [2] largest  [3] filter  [4] duplicates  [5] subfolders  \
+                     [6] similar  [7] same name  [?] help  [0] back"
+                )
+            );
+            print!("Option: ");
+        } else {
+            show_full_menu = false;
+            println!("┌────────────────────────────────────────────────────────────┐");
+            println!("│ What do you want to do with this folder?                   │");
+            println!("│ [1] View full file tree                                    │");
+            println!("│ [2] View Top 10 largest files                              │");
+            println!("│ [3] Filter by type / extension (e.g. pdf, png)             │");
+            println!("│ [4] Find duplicates and move to Trash                      │");
+            println!("│ [5] View accessible subdirectories in this path            │");
+            println!("│ [6] Analyze content similarity between documents           │");
+            println!("│ [7] Find files with the same name                          │");
+            println!("│ [0] Back to main menu / Scan another folder                │");
+            println!("└────────────────────────────────────────────────────────────┘");
+            print!("Select an option [0-7]: ");
+        }
 
         let option = read_line_from_user();
 
@@ -186,7 +201,7 @@ fn run_action_menu(target_path: &Path, files: &[FileInfo]) {
             }
             "2" => {
                 let top_10 = get_top_largest(files, 10);
-                print_top_largest(&top_10);
+                print_top_largest(target_path, &top_10);
             }
             "3" => {
                 println!("\nEnter the extension to search for (e.g. pdf, mov, png, jpg):");
@@ -198,12 +213,12 @@ fn run_action_menu(target_path: &Path, files: &[FileInfo]) {
                     if filtered.is_empty() {
                         println!("No files found with extension '.{}'.", ext);
                     } else {
-                        print_filtered_files(&ext, &filtered);
+                        print_filtered_files(target_path, &ext, &filtered);
                     }
                 }
             }
             "4" => {
-                handle_duplicates_and_trash(files);
+                handle_duplicates_and_trash(target_path, files);
             }
             "5" => {
                 if let Ok(subdirs) = list_accessible_subdirectories(target_path) {
@@ -213,10 +228,13 @@ fn run_action_menu(target_path: &Path, files: &[FileInfo]) {
                 }
             }
             "6" => {
-                handle_similarity_analysis(files);
+                handle_similarity_analysis(target_path, files);
             }
             "7" => {
-                handle_same_name_files(files);
+                handle_same_name_files(target_path, files);
+            }
+            "?" | "help" | "menu" => {
+                show_full_menu = true;
             }
             "0" | "exit" | "back" => {
                 println!("Returning to main menu...");
@@ -233,7 +251,7 @@ fn run_action_menu(target_path: &Path, files: &[FileInfo]) {
 ///
 /// Compares a base file against all other documents in the scanned folder
 /// using a composite score (vocabulary + phrases + length).
-fn handle_similarity_analysis(files: &[FileInfo]) {
+fn handle_similarity_analysis(root: &Path, files: &[FileInfo]) {
     // Filter only text files and PDFs
     let text_or_pdf_files: Vec<&FileInfo> = files
         .iter()
@@ -241,14 +259,14 @@ fn handle_similarity_analysis(files: &[FileInfo]) {
             let ext = f.extension.as_deref().unwrap_or("").to_lowercase();
             matches!(
                 ext.as_str(),
-                "pdf" | "txt" | "md" | "rs" | "json" | "csv" | "py" | "js" | "c" | "cpp" | "docx"
+                "pdf" | "txt" | "md" | "rs" | "json" | "csv" | "py" | "js" | "c" | "cpp"
             )
         })
         .collect();
 
     if text_or_pdf_files.len() < 2 {
         println!("\nAt least 2 text/PDF files are needed in this folder to compare.");
-        println!("Supported types: PDF, TXT, MD, source code (rs, py, js, c, cpp), JSON, CSV, DOCX\n");
+        println!("Supported types: PDF, TXT, MD, source code (rs, py, js, c, cpp), JSON, CSV\n");
         return;
     }
 
@@ -292,7 +310,7 @@ fn handle_similarity_analysis(files: &[FileInfo]) {
     );
 
     let matches = find_similar_documents(selected, files, threshold);
-    print_similarity_results(selected.name(), &matches, threshold);
+    print_similarity_results(root, selected.name(), &matches, threshold);
 }
 
 /// Displays a paginated file list (20 per page) and lets the user
@@ -345,9 +363,9 @@ fn select_file_paginated<'a>(files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
             println!(
                 "  {:<4}  {:<30}  {:<6}  {}",
                 format!("[{}]", global_num),
-                truncate_name(f.name(), 30),
+                truncate(f.name(), 30),
                 ext,
-                truncate_name(folder, 26),
+                truncate(folder, 26),
             );
         }
 
@@ -433,29 +451,19 @@ fn select_file_paginated<'a>(files: &[&'a FileInfo]) -> Option<&'a FileInfo> {
     }
 }
 
-/// Truncates a string to the given maximum character count, appending '…' if cut.
-fn truncate_name(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let cut: String = s.chars().take(max - 1).collect();
-        format!("{}…", cut)
-    }
-}
-
 /// Finds and displays files that share the same name within the scanned folder.
 ///
 /// Unlike exact duplicates (option 4), content is not analyzed here:
 /// two files with the same name but different content (e.g. different versions
 /// of a document) will also appear in the list.
-fn handle_same_name_files(files: &[FileInfo]) {
+fn handle_same_name_files(root: &Path, files: &[FileInfo]) {
     println!("\nSearching for files with the same name...");
     let groups = find_same_name_files(files);
-    print_same_name_results(&groups);
+    print_same_name_results(root, &groups);
 }
 
 /// Runs the SHA-256 duplicate analysis and offers to move them to the Trash.
-fn handle_duplicates_and_trash(files: &[FileInfo]) {
+fn handle_duplicates_and_trash(root: &Path, files: &[FileInfo]) {
     println!("\nCalculating SHA-256 hashes to find exact duplicates...");
     let duplicate_groups = find_exact_duplicates(files);
 
@@ -464,7 +472,7 @@ fn handle_duplicates_and_trash(files: &[FileInfo]) {
         return;
     }
 
-    print_exact_duplicates(&duplicate_groups);
+    print_exact_duplicates(root, &duplicate_groups);
 
     let files_to_trash: Vec<FileInfo> = duplicate_groups
         .iter()
@@ -497,6 +505,8 @@ fn handle_duplicates_and_trash(files: &[FileInfo]) {
 
 /// Reads a line from standard input (keyboard) and trims whitespace and newlines.
 fn read_line_from_user() -> String {
+    // Flush so prompts written with `print!` appear before the user types
+    let _ = io::stdout().flush();
     let mut buffer = String::new();
     io::stdin()
         .read_line(&mut buffer)
@@ -565,6 +575,29 @@ mod tests {
         assert!(should_ignore_directory(".cache"));
         assert!(!should_ignore_directory("photos"));
         assert!(!should_ignore_directory("documents"));
+    }
+
+    #[test]
+    fn test_duplicates_keep_oldest() {
+        use std::fs::{self, File};
+        use std::time::{Duration, SystemTime};
+
+        let dir = std::env::temp_dir().join(format!("oxide_clean_test_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let newer = dir.join("a_newer.txt");
+        let older = dir.join("b_older.txt");
+        fs::write(&newer, "same content").unwrap();
+        fs::write(&older, "same content").unwrap();
+        let old_time = SystemTime::now() - Duration::from_secs(3600);
+        File::options().write(true).open(&older).unwrap().set_modified(old_time).unwrap();
+
+        let files = scan_directory(&dir).unwrap();
+        let groups = find_exact_duplicates(&files);
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].original.path, older);
+        assert_eq!(groups[0].duplicates[0].path, newer);
     }
 
     #[test]
