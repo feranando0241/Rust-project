@@ -67,12 +67,16 @@ oxide_clean ~/Downloads --ext pdf            # all PDF files
 oxide_clean ~/Downloads --dupes              # list exact duplicates (read-only)
 oxide_clean ~/Downloads --dupes --trash      # move duplicate copies to Trash (asks first)
 oxide_clean ~/Downloads --dupes --trash -y   # same, without asking
+oxide_clean ~/Pictures --dupes --keep-in Albums --trash   # keep the copies inside Albums/
+oxide_clean ~ --dupes --exclude Library --exclude Backups  # leave folders out of the scan
 oxide_clean ~/Downloads --same-name          # files that share a name
 oxide_clean ~/Documents --similar thesis.pdf --threshold 50
 oxide_clean --help
 ```
 
 - `--dupes` on its own never deletes anything.
+- `--keep-in <FOLDER>` keeps, in each group, every copy inside that folder instead of the oldest, so nothing inside it is ever moved (groups without a copy there keep the oldest). If the folder doesn't exist or holds no copy at all, the run stops with an error and nothing is moved, so a typo can't make `--trash --yes` remove the copies you meant to keep.
+- `--exclude <FOLDER>` leaves a folder out of the scan; repeat it for several. Folders are relative to the scanned path, or full paths.
 - `--trash` always asks for confirmation unless `--yes`/`-y` is given. Without a terminal to ask on (e.g. in a script), it refuses and exits with an error.
 - Output can be piped or redirected (`> report.txt`); colors turn off automatically.
 - Exit codes: `0` success, `1` runtime error, `2` invalid arguments.
@@ -156,7 +160,14 @@ Hardlinks (several paths to the same data) count as one file. They are never rep
 
 **Hash cache.** Hashes are saved between runs (`~/Library/Caches/oxide_clean/hashes.tsv` on macOS), so scanning the same folder again skips files that haven't changed. A hash is reused only if the file's size, modification time, change time (ctime) and inode all match, which catches edits even when tools preserve the modification time. A corrupt or outdated cache is ignored, entries unused for 90 days are dropped, and `--no-cache` turns it off. See [ADR-0003](docs/adr/0003-hash-cache.md).
 
-**Moving to the Trash never trusts the cache.** Right before acting, the kept copy and every extra copy are re-read from disk. If anything changed, that file (or the whole group, if the kept copy changed) is skipped. Duplicates are listed with the space that would be recovered, and you choose whether to move them to the macOS Trash, where they can be restored.
+**Moving to the Trash never trusts the cache.** Right before acting, the kept copy and every extra copy are re-read from disk. If anything changed, that file (or the whole group, if the kept copy changed) is skipped. Duplicates are listed with the space that would be recovered. In the menu you then choose what to do:
+
+- `y` moves every extra copy to the Trash.
+- Group numbers (`1,3,5-7`) move only those groups.
+- `k <folder>` keeps the copies inside a folder (e.g. `k Photos`) and shows the groups again.
+- Enter leaves everything as it is.
+
+Everything goes to the macOS Trash, where it can be restored.
 
 ---
 

@@ -35,15 +35,15 @@ fn main() -> ExitCode {
         Ok(Command::Run {
             path,
             action,
-            use_cache,
+            options,
         }) => {
             let result = app::resolve_folder(&path).and_then(|root| match action {
                 // A path with no action opens the interactive menu on it
                 None => {
-                    ui::menu::process_target_path(&root, use_cache);
+                    ui::menu::process_target_path(&root, &options);
                     Ok(())
                 }
-                Some(action) => app::run_action(&root, action, use_cache),
+                Some(action) => app::run_action(&root, action, &options),
             });
             match result {
                 Ok(()) => ExitCode::SUCCESS,

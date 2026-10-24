@@ -5,7 +5,7 @@ use crate::core::Progress;
 use crate::core::duplicates::DuplicateGroup;
 use crate::core::hash_cache::HashCache;
 use crate::core::hashing::{hash_in_parallel, hash_threads};
-use crate::core::models::{FileId, FileInfo};
+use crate::core::models::FileInfo;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -56,7 +56,7 @@ pub fn remove_duplicates(
     on_progress: Progress,
     remove: &dyn Fn(&Path) -> Result<(), String>,
 ) -> TrashReport {
-    let total: usize = groups.iter().map(|g| 1 + g.duplicates.len()).sum();
+    let total: usize = groups.iter().map(|g| 1 + g.paths_to_remove().len()).sum();
     let verified = AtomicUsize::new(0);
     on_progress(0, total);
 
@@ -66,8 +66,8 @@ pub fn remove_duplicates(
         // Verify one group at a time (its files in parallel), then act on it
         // right away: verifying everything first would widen the window in
         // which a file could change between its check and its move.
-        let files: Vec<FileInfo> = std::iter::once(&group.original)
-            .chain(&group.duplicates)
+        let files: Vec<FileInfo> = std::iter::once(group.original())
+            .chain(group.paths_to_remove())
             .cloned()
             .collect();
         let current: HashMap<PathBuf, String> =
@@ -79,55 +79,39 @@ pub fn remove_duplicates(
             .collect();
         let unchanged = |file: &FileInfo| current.get(&file.path) == Some(&group.hash);
 
-        if !unchanged(&group.original) {
-            let reason = SkipReason::KeptCopyChanged(group.original.path.clone());
-            for dupe in &group.duplicates {
-                report.failed.push((dupe.path.clone(), reason.clone()));
+        if !unchanged(group.original()) {
+            let reason = SkipReason::KeptCopyChanged(group.original().path.clone());
+            for path in group.paths_to_remove() {
+                report.failed.push((path.path.clone(), reason.clone()));
             }
             continue;
         }
 
-        // Space comes back only when every path to a file is gone, so count the
-        // paths per file (hardlinks share one) before anything is moved.
-        // Without a file identity, each path is treated as its own file.
-        let ids: Vec<FileId> = group
-            .duplicates
-            .iter()
-            .enumerate()
-            .map(|(i, dupe)| {
-                FileId::of(&dupe.path).unwrap_or(FileId {
-                    dev: u64::MAX,
-                    ino: i as u64,
-                })
-            })
-            .collect();
-        let mut paths_left: HashMap<FileId, usize> = HashMap::new();
-        for id in &ids {
-            *paths_left.entry(*id).or_default() += 1;
-        }
-
-        for (dupe, id) in group.duplicates.iter().zip(&ids) {
-            if !unchanged(dupe) {
-                report
-                    .failed
-                    .push((dupe.path.clone(), SkipReason::ChangedSinceScan));
-                continue;
-            }
-
-            match remove(&dupe.path) {
-                Ok(()) => {
-                    report.moved += 1;
-                    let left = paths_left.get_mut(id).expect("every id was counted");
-                    *left -= 1;
-                    // ponytail: hardlinks outside the scanned folder aren't seen, so
-                    // the space may not really come back; compare st_nlink if that matters.
-                    if *left == 0 {
-                        report.freed_bytes += group.file_size;
+        for copy in group.extras() {
+            // A copy's space comes back only once every one of its paths is gone
+            let mut every_path_moved = true;
+            for path in &copy.paths {
+                if !unchanged(path) {
+                    report
+                        .failed
+                        .push((path.path.clone(), SkipReason::ChangedSinceScan));
+                    every_path_moved = false;
+                    continue;
+                }
+                match remove(&path.path) {
+                    Ok(()) => report.moved += 1,
+                    Err(err) => {
+                        report
+                            .failed
+                            .push((path.path.clone(), SkipReason::CouldNotMove(err)));
+                        every_path_moved = false;
                     }
                 }
-                Err(err) => report
-                    .failed
-                    .push((dupe.path.clone(), SkipReason::CouldNotMove(err))),
+            }
+            // ponytail: hardlinks outside the scanned folder aren't seen, so the
+            // space may not really come back; compare st_nlink if that matters.
+            if every_path_moved {
+                report.freed_bytes += group.file_size;
             }
         }
     }
@@ -165,10 +149,10 @@ mod tests {
             &fake_trash(&dir),
         );
 
-        let originals_kept = groups.iter().all(|g| g.original.path.exists());
+        let originals_kept = groups.iter().all(|g| g.original().path.exists());
         let copies_gone = groups
             .iter()
-            .flat_map(|g| &g.duplicates)
+            .flat_map(|g| g.paths_to_remove())
             .all(|d| !d.path.exists());
         let in_fake_trash = fs::read_dir(dir.join(".fake_trash")).unwrap().count();
         fs::remove_dir_all(&dir).unwrap();
@@ -219,10 +203,10 @@ mod tests {
         let groups = detect(&dir);
         assert_eq!(groups.len(), 1);
         // The kept copy is edited after the scan: its duplicate must survive
-        fs::write(&groups[0].original.path, "edited after scan").unwrap();
+        fs::write(&groups[0].original().path, "edited after scan").unwrap();
 
         let report = remove_duplicates(&groups, &no_progress, &fake_trash(&dir));
-        let duplicate_still_there = groups[0].duplicates[0].path.exists();
+        let duplicate_still_there = groups[0].paths_to_remove()[0].path.exists();
         fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(report.moved, 0);
@@ -253,9 +237,13 @@ mod tests {
 
         let groups = detect(&dir);
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].original.path, keep);
-        assert_eq!(groups[0].extra_copies, 1, "one extra file...");
-        assert_eq!(groups[0].duplicates.len(), 2, "...reachable by two paths");
+        assert_eq!(groups[0].original().path, keep);
+        assert_eq!(groups[0].extra_copies(), 1, "one extra file...");
+        assert_eq!(
+            groups[0].paths_to_remove().len(),
+            2,
+            "...reachable by two paths"
+        );
 
         let report = remove_duplicates(&groups, &no_progress, &fake_trash(&dir));
         let copy_paths_gone =

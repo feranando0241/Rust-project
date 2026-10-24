@@ -1,7 +1,8 @@
 //! Reading what the user types and turning it into paths and commands.
 
+use std::collections::BTreeSet;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Reads a line from standard input (keyboard) and trims whitespace and newlines.
 pub fn read_line_from_user() -> String {
@@ -50,9 +51,99 @@ pub fn resolve_user_path(input: &str) -> PathBuf {
     }
 }
 
+/// Expresses `path` the way the scanner builds paths for `root` (root +
+/// relative part), so it can be compared with scanned files. A path outside
+/// `root`, or one that can't be resolved, is returned unchanged.
+pub fn in_scan_form(root: &Path, path: PathBuf) -> PathBuf {
+    match (path.canonicalize(), root.canonicalize()) {
+        (Ok(abs), Ok(root_abs)) => match abs.strip_prefix(&root_abs) {
+            Ok(rel) => root.join(rel),
+            Err(_) => abs,
+        },
+        _ => path,
+    }
+}
+
+/// A folder typed by the user (`--keep-in`, `--exclude`, or in the menu), in
+/// the same form as the scanned paths. Relative folders are taken relative to
+/// the scanned `root`; `~` is expanded.
+pub fn folder_in_scan(root: &Path, input: &str) -> PathBuf {
+    let typed = resolve_user_path(input);
+    if typed.is_absolute() {
+        in_scan_form(root, typed)
+    } else {
+        root.join(typed)
+    }
+}
+
+/// Parses a list of group numbers like `1,3,5-7` (spaces allowed) into
+/// zero-based indices, sorted and without repeats. Numbers go from 1 to `max`.
+pub fn parse_selection(input: &str, max: usize) -> Result<Vec<usize>, String> {
+    let number = |s: &str| -> Result<usize, String> {
+        match s.trim().parse::<usize>() {
+            Ok(n) if (1..=max).contains(&n) => Ok(n),
+            _ => Err(format!(
+                "'{}' isn't a group number from 1 to {}.",
+                s.trim(),
+                max
+            )),
+        }
+    };
+
+    let mut picked = BTreeSet::new();
+    for part in input.split(',').filter(|p| !p.trim().is_empty()) {
+        match part.split_once('-') {
+            Some((from, to)) => {
+                let (from, to) = (number(from)?, number(to)?);
+                if from > to {
+                    return Err(format!("'{}' goes backwards.", part.trim()));
+                }
+                picked.extend(from..=to);
+            }
+            None => {
+                picked.insert(number(part)?);
+            }
+        }
+    }
+    if picked.is_empty() {
+        return Err("No group numbers given.".to_string());
+    }
+    Ok(picked.into_iter().map(|n| n - 1).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_selection() {
+        assert_eq!(parse_selection("1", 5), Ok(vec![0]));
+        assert_eq!(parse_selection("3,1", 5), Ok(vec![0, 2]));
+        assert_eq!(parse_selection(" 1 , 3-5 ", 5), Ok(vec![0, 2, 3, 4]));
+        assert_eq!(parse_selection("2-2,2", 5), Ok(vec![1]), "no repeats");
+        for bad in ["", "0", "6", "a", "1-", "4-2", "1,,x", "-3"] {
+            assert!(
+                parse_selection(bad, 5).is_err(),
+                "expected an error for '{}'",
+                bad
+            );
+        }
+    }
+
+    #[test]
+    fn test_folder_in_scan() {
+        let root = Path::new("/scan");
+        assert_eq!(folder_in_scan(root, "Photos"), Path::new("/scan/Photos"));
+        assert_eq!(
+            folder_in_scan(root, "./Photos/2024"),
+            Path::new("/scan/./Photos/2024")
+        );
+        // Matching is by path components, so "./" doesn't matter
+        assert!(
+            Path::new("/scan/Photos/2024/a.jpg").starts_with(folder_in_scan(root, "./Photos/2024"))
+        );
+        assert!(!Path::new("/scan/Photos2/a.jpg").starts_with(folder_in_scan(root, "Photos")));
+    }
 
     #[test]
     fn test_is_exit_command() {

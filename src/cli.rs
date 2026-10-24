@@ -19,15 +19,19 @@ ACTIONS:
     --largest [N]          Top N largest files (default 10)
     --ext <EXT>            Files with the given extension (e.g. pdf)
     --dupes                List exact duplicates (read-only)
-      --trash              ...and move the copies to the Trash (asks first)
+      --keep-in <FOLDER>   ...keep every copy inside FOLDER instead of the oldest
+      --trash              ...and move the extra copies to the Trash (asks first)
       --yes, -y            ...without asking
     --same-name            Files that share the same name
     --similar <FILE>       Documents with content similar to FILE
       --threshold <N>      Minimum similarity percentage (default 30)
 
 OPTIONS:
+    --exclude <FOLDER>     Leave FOLDER out of the scan (can be repeated)
     --no-cache             Don't reuse or save file hashes between runs
     -h, --help             Show this help
+
+FOLDER can be relative to PATH (e.g. --keep-in Photos) or a full path.
 
 File hashes are cached in ~/Library/Caches/oxide_clean (macOS) or
 ~/.cache/oxide_clean, or under $XDG_CACHE_HOME if set, so a second scan of the
@@ -41,9 +45,37 @@ Colors are disabled when the output is not a terminal or NO_COLOR is set.
 pub enum Action {
     Largest(usize),
     Ext(String),
-    Dupes { trash: bool, assume_yes: bool },
+    Dupes {
+        trash: bool,
+        assume_yes: bool,
+        /// Keep the copy inside this folder rather than the oldest.
+        keep_in: Option<String>,
+    },
     SameName,
-    Similar { file: String, threshold: f64 },
+    Similar {
+        file: String,
+        threshold: f64,
+    },
+}
+
+/// Options that apply to the whole run, whatever the action (or the menu).
+/// New flags of this kind go here, so the functions that receive them don't
+/// change signature every time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunOptions {
+    /// False with `--no-cache`.
+    pub use_cache: bool,
+    /// Folders left out of the scan (`--exclude`), as typed.
+    pub exclude: Vec<String>,
+}
+
+impl Default for RunOptions {
+    fn default() -> RunOptions {
+        RunOptions {
+            use_cache: true,
+            exclude: Vec::new(),
+        }
+    }
 }
 
 /// What the program should do, as decided by the arguments.
@@ -53,11 +85,10 @@ pub enum Command {
     Interactive,
     Help,
     /// Scan `path`; run `action` and exit, or open the action menu when `None`.
-    /// `use_cache` is false with `--no-cache`.
     Run {
         path: String,
         action: Option<Action>,
-        use_cache: bool,
+        options: RunOptions,
     },
 }
 
@@ -69,9 +100,10 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
 
     let mut path: Option<String> = None;
     let mut action: Option<Action> = None;
+    let mut options = RunOptions::default();
     let mut trash = false;
     let mut assume_yes = false;
-    let mut no_cache = false;
+    let mut keep_in: Option<String> = None;
     let mut threshold: Option<f64> = None;
 
     let mut iter = args.iter().peekable();
@@ -90,6 +122,7 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
             "--dupes" => Some(Action::Dupes {
                 trash: false,
                 assume_yes: false,
+                keep_in: None,
             }),
             "--same-name" => Some(Action::SameName),
             "--similar" => Some(Action::Similar {
@@ -108,6 +141,10 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
                 threshold = Some(value);
                 None
             }
+            "--keep-in" => {
+                keep_in = Some(take_value(&mut iter, "--keep-in")?);
+                None
+            }
             "--trash" => {
                 trash = true;
                 None
@@ -116,8 +153,12 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
                 assume_yes = true;
                 None
             }
+            "--exclude" => {
+                options.exclude.push(take_value(&mut iter, "--exclude")?);
+                None
+            }
             "--no-cache" => {
-                no_cache = true;
+                options.use_cache = false;
                 None
             }
             flag if flag.starts_with('-') => return Err(format!("unknown option '{}'", flag)),
@@ -139,16 +180,12 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
     }
 
     // Attach modifiers to their action, rejecting them anywhere else
-    let action = match action {
-        Some(Action::Dupes { .. }) => Some(Action::Dupes { trash, assume_yes }),
-        Some(Action::Similar { file, .. }) => Some(Action::Similar {
-            file,
-            threshold: threshold.unwrap_or(DEFAULT_THRESHOLD),
-        }),
-        other => other,
-    };
-    if trash && !matches!(action, Some(Action::Dupes { .. })) {
+    let is_dupes = matches!(action, Some(Action::Dupes { .. }));
+    if trash && !is_dupes {
         return Err("--trash can only be used with --dupes".to_string());
+    }
+    if keep_in.is_some() && !is_dupes {
+        return Err("--keep-in can only be used with --dupes".to_string());
     }
     if assume_yes && !trash {
         return Err("--yes can only be used with --dupes --trash".to_string());
@@ -156,12 +193,24 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
     if threshold.is_some() && !matches!(action, Some(Action::Similar { .. })) {
         return Err("--threshold can only be used with --similar".to_string());
     }
+    let action = match action {
+        Some(Action::Dupes { .. }) => Some(Action::Dupes {
+            trash,
+            assume_yes,
+            keep_in,
+        }),
+        Some(Action::Similar { file, .. }) => Some(Action::Similar {
+            file,
+            threshold: threshold.unwrap_or(DEFAULT_THRESHOLD),
+        }),
+        other => other,
+    };
 
     let path = path.ok_or("missing <PATH> to scan")?;
     Ok(Command::Run {
         path,
         action,
-        use_cache: !no_cache,
+        options,
     })
 }
 
@@ -189,7 +238,15 @@ mod tests {
         Ok(Command::Run {
             path: path.to_string(),
             action,
-            use_cache: true,
+            options: RunOptions::default(),
+        })
+    }
+
+    fn dupes(trash: bool, assume_yes: bool, keep_in: Option<&str>) -> Option<Action> {
+        Some(Action::Dupes {
+            trash,
+            assume_yes,
+            keep_in: keep_in.map(String::from),
         })
     }
 
@@ -206,25 +263,14 @@ mod tests {
             run(".", Some(Action::Ext("pdf".into())))
         );
         assert_eq!(parse(". --same-name"), run(".", Some(Action::SameName)));
-        assert_eq!(
-            parse(". --dupes"),
-            run(
-                ".",
-                Some(Action::Dupes {
-                    trash: false,
-                    assume_yes: false
-                })
-            )
-        );
+        assert_eq!(parse(". --dupes"), run(".", dupes(false, false, None)));
         assert_eq!(
             parse(". --trash -y --dupes"),
-            run(
-                ".",
-                Some(Action::Dupes {
-                    trash: true,
-                    assume_yes: true
-                })
-            )
+            run(".", dupes(true, true, None))
+        );
+        assert_eq!(
+            parse(". --dupes --keep-in Photos --trash"),
+            run(".", dupes(true, false, Some("Photos")))
         );
         assert_eq!(
             parse(". --similar a.txt --threshold 55"),
@@ -236,24 +282,30 @@ mod tests {
                 })
             )
         );
-        // --no-cache works with an action, and with a bare path (menu mode)
+    }
+
+    #[test]
+    fn test_run_options_work_with_any_action_and_the_menu() {
         assert_eq!(
-            parse(". --dupes --no-cache"),
+            parse(". --dupes --no-cache --exclude Backups --exclude old/stuff"),
             Ok(Command::Run {
                 path: ".".into(),
-                action: Some(Action::Dupes {
-                    trash: false,
-                    assume_yes: false
-                }),
-                use_cache: false,
+                action: dupes(false, false, None),
+                options: RunOptions {
+                    use_cache: false,
+                    exclude: vec!["Backups".into(), "old/stuff".into()],
+                },
             })
         );
         assert_eq!(
-            parse("--no-cache ."),
+            parse("--exclude Backups ."),
             Ok(Command::Run {
                 path: ".".into(),
                 action: None,
-                use_cache: false
+                options: RunOptions {
+                    use_cache: true,
+                    exclude: vec!["Backups".into()],
+                },
             })
         );
     }
@@ -277,6 +329,9 @@ mod tests {
             ". --largest --threshold 10",
             ". --similar a.txt --threshold 150",
             ". --similar a.txt --threshold abc",
+            ". --largest --keep-in Photos",
+            ". --dupes --keep-in",
+            ". --exclude",
             ". other",
             "--dupes",
         ] {

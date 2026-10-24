@@ -135,8 +135,9 @@ fn found_groups(groups: &[DuplicateGroup]) -> BTreeSet<BTreeSet<FileId>> {
     groups
         .iter()
         .map(|g| {
-            std::iter::once(&g.original)
-                .chain(&g.duplicates)
+            g.copies
+                .iter()
+                .flat_map(|c| &c.paths)
                 .map(|f| FileId::of(&f.path).unwrap())
                 .collect()
         })
@@ -192,30 +193,53 @@ fn prop_detection_matches_brute_force_with_and_without_cache() {
 fn prop_removal_never_loses_content() {
     for seed in 1..=CASES {
         let dir = temp_dir(&format!("prop_remove_{}", seed));
-        random_folder(&mut Rng::new(seed), &dir);
+        let mut rng = Rng::new(seed);
+        random_folder(&mut rng, &dir);
         let before = read_all(&dir);
         let contents_before: BTreeSet<&Vec<u8>> = before.values().map(|(_, bytes)| bytes).collect();
 
         let files = scan_directory(&dir, &no_progress).unwrap();
-        let groups = find_exact_duplicates(&files, &HashCache::disabled(), &no_progress);
-        let copies: usize = groups.iter().map(|g| g.duplicates.len()).sum();
-        let promised_bytes: u64 = groups
+        let mut groups = find_exact_duplicates(&files, &HashCache::disabled(), &no_progress);
+        // The user may choose to keep any copies (e.g. with --keep-in): the
+        // guarantees below must hold whichever ones they are.
+        for group in &mut groups {
+            let wanted: Vec<bool> = (0..group.copies.len()).map(|_| rng.below(2) == 0).collect();
+            group.keep_where(|i, _| wanted[i]);
+        }
+        // Groups that keep several copies still have exactly those as duplicates
+        let should_remain: BTreeSet<BTreeSet<FileId>> = groups
             .iter()
-            .map(|g| g.file_size * g.extra_copies as u64)
-            .sum();
+            .filter(|g| g.copies.len() - g.extra_copies() > 1)
+            .map(|g| {
+                g.copies
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| g.is_kept(*i))
+                    .flat_map(|(_, c)| &c.paths)
+                    .map(|f| FileId::of(&f.path).unwrap())
+                    .collect()
+            })
+            .collect();
+        let copies: usize = groups.iter().map(|g| g.paths_to_remove().len()).sum();
+        let promised_bytes: u64 = groups.iter().map(|g| g.wasted_bytes()).sum();
         let report = remove_duplicates(&groups, &no_progress, &fake_trash(&dir));
 
         let after = read_all(&dir);
         let contents_after: BTreeSet<&Vec<u8>> = after.values().map(|(_, bytes)| bytes).collect();
-        let originals_kept = groups.iter().all(|g| g.original.path.exists());
+        let originals_kept = groups.iter().all(|g| {
+            g.copies
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| g.is_kept(*i))
+                .all(|(_, c)| c.paths.iter().all(|p| p.path.exists()))
+        });
         let duplicates_left = expected_groups(&dir);
         fs::remove_dir_all(&dir).unwrap();
 
-        assert!(
-            duplicates_left.is_empty(),
-            "seed {}: duplicates remain after removal: {:?}",
-            seed,
-            duplicates_left
+        assert_eq!(
+            duplicates_left, should_remain,
+            "seed {}: only the copies chosen to keep may remain as duplicates",
+            seed
         );
 
         assert_eq!(

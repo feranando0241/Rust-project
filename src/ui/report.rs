@@ -188,30 +188,33 @@ pub fn print_exact_duplicates(root: &Path, groups: &[DuplicateGroup]) {
 
     header("Identical files");
     hint("These files have exactly the same content. In each group the oldest");
-    hint("copy is kept; the extra copies can be moved to the Trash.");
+    hint("copy is kept (or every copy inside the folder you pick); the extra");
+    hint("copies can be moved to the Trash.");
 
     for (i, group) in groups.iter().enumerate() {
-        let wasted_in_group = group.file_size * group.extra_copies as u64;
-        total_wasted += wasted_in_group;
-        total_dupe_files += group.extra_copies;
+        total_wasted += group.wasted_bytes();
+        total_dupe_files += group.extra_copies();
 
         println!(
             "\n{}  {}",
             bold(&format!("Group {}", i + 1)),
             dim(&format!(
                 "{} · {} each · {} can be freed",
-                group.original.name(),
+                group.original().name(),
                 format_size(group.file_size),
-                format_size(wasted_in_group)
+                format_size(group.wasted_bytes())
             ))
         );
-        println!(
-            "  {}  {}",
-            green("keep "),
-            relative(&group.original.path, root)
-        );
-        for dupe in &group.duplicates {
-            println!("  {}  {}", red("extra"), relative(&dupe.path, root));
+        // Copies in age order; hardlinks of one copy share its label
+        for (index, copy) in group.copies.iter().enumerate() {
+            let label = if group.is_kept(index) {
+                green("keep ")
+            } else {
+                red("extra")
+            };
+            for path in &copy.paths {
+                println!("  {}  {}", label, relative(&path.path, root));
+            }
         }
     }
 

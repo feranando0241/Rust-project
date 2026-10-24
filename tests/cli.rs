@@ -233,6 +233,71 @@ fn no_cache_flag_neither_reads_nor_writes_the_cache() {
 }
 
 #[test]
+fn keep_in_keeps_the_copy_inside_that_folder() {
+    let dir = fixture("keep_in");
+    let default = run(&[path_str(&dir), "--dupes"], "");
+    let chosen = run(
+        &[path_str(&dir), "--dupes", "--keep-in", "Photos/backup"],
+        "",
+    );
+    fs::remove_dir_all(&dir).unwrap();
+
+    // By default the older copy (written first, in 2024/) is kept
+    assert!(stdout(&default).contains("keep   ./Photos/2024/img.jpg"));
+    assert_eq!(chosen.status.code(), Some(0));
+    let text = stdout(&chosen);
+    assert!(text.contains("keep   ./Photos/backup/img.jpg"));
+    assert!(text.contains("extra  ./Photos/2024/img.jpg"));
+    assert!(text.contains("Keeping every copy inside 'Photos/backup' in 1 of 1 group"));
+}
+
+#[test]
+fn keep_in_typo_stops_before_anything_is_moved() {
+    let dir = fixture("keep_in_typo");
+    // --trash without --yes: if the --keep-in check didn't stop the run, it
+    // would fail later for lack of a terminal, with a different message.
+    let missing = run(
+        &[path_str(&dir), "--dupes", "--keep-in", "Photoz", "--trash"],
+        "",
+    );
+    let no_copy_there = run(
+        &[path_str(&dir), "--dupes", "--keep-in", "Videos", "--trash"],
+        "",
+    );
+    let both_exist =
+        dir.join("Photos/2024/img.jpg").exists() && dir.join("Photos/backup/img.jpg").exists();
+    fs::remove_dir_all(&dir).unwrap();
+
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(stderr(&missing).contains("is not a directory"));
+    assert_eq!(no_copy_there.status.code(), Some(1));
+    assert!(stderr(&no_copy_there).contains("no duplicate group has a copy inside"));
+    assert!(!stderr(&no_copy_there).contains("Nothing was moved: there's no terminal"));
+    assert!(both_exist);
+}
+
+#[test]
+fn exclude_leaves_a_folder_out_of_the_scan() {
+    let dir = fixture("exclude");
+    let excluded = run(
+        &[path_str(&dir), "--dupes", "--exclude", "Photos/backup"],
+        "",
+    );
+    let unknown = run(&[path_str(&dir), "--dupes", "--exclude", "Nope"], "");
+    fs::remove_dir_all(&dir).unwrap();
+
+    assert_eq!(excluded.status.code(), Some(0));
+    let text = stdout(&excluded);
+    assert!(text.contains("Left out 1 file inside 'Photos/backup'"));
+    assert!(text.contains("No identical copies found"));
+
+    // A folder that doesn't exist is reported and ignored, not fatal
+    assert_eq!(unknown.status.code(), Some(0));
+    assert!(stdout(&unknown).contains("no such folder here, ignored"));
+    assert!(stdout(&unknown).contains("1 extra copy in 1 group"));
+}
+
+#[test]
 fn interactive_quit() {
     let out = run(&[], "q\n");
     assert_eq!(out.status.code(), Some(0));

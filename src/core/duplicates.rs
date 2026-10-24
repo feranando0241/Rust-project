@@ -8,7 +8,29 @@ use crate::core::models::{FileId, FileInfo};
 use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// One distinct file with the group's content. It has several paths when it
+/// has hardlinks inside the scanned folder; they are always kept or removed
+/// together, since the space only comes back once every path is gone.
+#[derive(Debug, Clone)]
+pub struct FileCopy {
+    /// Every path to this file found in the scan. The first is the one shown.
+    pub paths: Vec<FileInfo>,
+}
+
+impl FileCopy {
+    /// The path used to show and verify this copy.
+    pub fn main(&self) -> &FileInfo {
+        &self.paths[0]
+    }
+
+    /// True if any path to this copy is inside `folder`.
+    pub fn is_inside(&self, folder: &Path) -> bool {
+        self.paths.iter().any(|p| p.path.starts_with(folder))
+    }
+}
 
 /// Represents a verified group of duplicate files.
 #[derive(Debug, Clone)]
@@ -17,16 +39,101 @@ pub struct DuplicateGroup {
     /// Re-checked against every file right before trashing.
     pub hash: String,
     pub file_size: u64,
-    /// The file to keep: the oldest by modification time. Any other hardlinks
-    /// to it stay too (they are the same file).
-    pub original: FileInfo,
-    /// Every path to move to the Trash: one per extra copy, plus any other
-    /// hardlinks to those copies found in the scan. Space only comes back once
-    /// every path to a file is gone, so all of them are listed.
-    pub duplicates: Vec<FileInfo>,
-    /// How many distinct extra files (not paths) the group has. Each one
-    /// frees `file_size` bytes when all of its paths are moved.
-    pub extra_copies: usize,
+    /// Every distinct file with this content, oldest first.
+    pub copies: Vec<FileCopy>,
+    /// Which of `copies` stay, by index. Private so that a group can never
+    /// end up keeping none of them: only `keep_where` changes it.
+    kept: Vec<bool>,
+}
+
+impl DuplicateGroup {
+    /// A group that keeps only its first (oldest) copy.
+    fn new(hash: String, file_size: u64, copies: Vec<FileCopy>) -> DuplicateGroup {
+        let mut kept = vec![false; copies.len()];
+        kept[0] = true;
+        DuplicateGroup {
+            hash,
+            file_size,
+            copies,
+            kept,
+        }
+    }
+
+    /// True if `copies[index]` stays.
+    pub fn is_kept(&self, index: usize) -> bool {
+        self.kept[index]
+    }
+
+    /// The first copy that stays; it is shown for the group and verified
+    /// before anything in it is moved.
+    pub fn kept(&self) -> &FileCopy {
+        let index = self
+            .kept
+            .iter()
+            .position(|&k| k)
+            .expect("a group always keeps a copy");
+        &self.copies[index]
+    }
+
+    /// The path shown for the copy that stays.
+    pub fn original(&self) -> &FileInfo {
+        self.kept().main()
+    }
+
+    /// The copies that would be moved to the Trash.
+    pub fn extras(&self) -> impl Iterator<Item = &FileCopy> {
+        self.copies
+            .iter()
+            .zip(&self.kept)
+            .filter(|(_, kept)| !**kept)
+            .map(|(copy, _)| copy)
+    }
+
+    /// How many distinct files would be removed (not paths).
+    pub fn extra_copies(&self) -> usize {
+        self.kept.iter().filter(|&&k| !k).count()
+    }
+
+    /// Every path that would be moved: all paths of every extra copy.
+    pub fn paths_to_remove(&self) -> Vec<&FileInfo> {
+        self.extras().flat_map(|copy| &copy.paths).collect()
+    }
+
+    /// Space freed if every extra copy is removed.
+    pub fn wasted_bytes(&self) -> u64 {
+        self.file_size * self.extra_copies() as u64
+    }
+
+    /// Keeps exactly the copies for which `keep` is true. Returns false,
+    /// changing nothing, if that would keep none of them.
+    pub fn keep_where(&mut self, keep: impl Fn(usize, &FileCopy) -> bool) -> bool {
+        let kept: Vec<bool> = self
+            .copies
+            .iter()
+            .enumerate()
+            .map(|(i, c)| keep(i, c))
+            .collect();
+        if !kept.contains(&true) {
+            return false;
+        }
+        self.kept = kept;
+        true
+    }
+
+    /// Keeps every copy inside `folder` (and only those), so nothing inside
+    /// it is ever moved. Returns false, changing nothing, if none is there.
+    pub fn keep_inside(&mut self, folder: &Path) -> bool {
+        self.keep_where(|_, copy| copy.is_inside(folder))
+    }
+}
+
+/// `keep_inside` on every group; returns how many have a copy in `folder`.
+pub fn keep_copies_inside(groups: &mut [DuplicateGroup], folder: &Path) -> usize {
+    groups
+        .iter_mut()
+        .map(|g| g.keep_inside(folder))
+        .filter(|&found| found)
+        .count()
 }
 
 /// Finds real duplicates using a three-step approach:
@@ -125,37 +232,25 @@ pub fn find_exact_duplicates(
                 (modified.is_none(), modified, f.path.clone())
             });
             let file_size = matching_files[0].size_bytes;
-            let original = matching_files[0].clone();
-            let extra_copies = matching_files.len() - 1;
-            // Each extra copy goes with all of its hardlinks, or no space is freed
-            let duplicates = matching_files
+            // Each copy carries all of its hardlinks, so they're kept or removed together
+            let copies = matching_files
                 .into_iter()
-                .skip(1)
-                .flat_map(|copy| {
-                    let links = FileId::of(&copy.path)
+                .map(|file| {
+                    let links = FileId::of(&file.path)
                         .and_then(|id| other_links.remove(&id))
                         .unwrap_or_default();
-                    std::iter::once(copy).chain(links)
+                    FileCopy {
+                        paths: std::iter::once(file).chain(links).collect(),
+                    }
                 })
                 .collect();
 
-            duplicate_groups.push(DuplicateGroup {
-                hash,
-                file_size,
-                original,
-                duplicates,
-                extra_copies,
-            });
+            duplicate_groups.push(DuplicateGroup::new(hash, file_size, copies));
         }
     }
 
     // Sort from most to least wasted space; ties by path so the order is stable
-    duplicate_groups.sort_by_cached_key(|g| {
-        (
-            Reverse(g.file_size * g.extra_copies as u64),
-            g.original.path.clone(),
-        )
-    });
+    duplicate_groups.sort_by_cached_key(|g| (Reverse(g.wasted_bytes()), g.original().path.clone()));
 
     duplicate_groups
 }
@@ -188,8 +283,55 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
 
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].original.path, older);
-        assert_eq!(groups[0].duplicates[0].path, newer);
+        assert_eq!(groups[0].original().path, older);
+        assert_eq!(groups[0].paths_to_remove()[0].path, newer);
+    }
+
+    #[test]
+    fn test_keep_inside_keeps_every_copy_in_that_folder() {
+        use std::time::{Duration, SystemTime};
+
+        let dir = temp_dir("keep_inside");
+        for folder in ["Downloads", "Photos/sub", "Other"] {
+            fs::create_dir_all(dir.join(folder)).unwrap();
+        }
+        // The oldest copy is in Downloads, so it's kept by default
+        let in_downloads = dir.join("Downloads/img.jpg");
+        fs::write(&in_downloads, "same image").unwrap();
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        File::options()
+            .write(true)
+            .open(&in_downloads)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        fs::write(dir.join("Photos/img.jpg"), "same image").unwrap();
+        fs::write(dir.join("Photos/sub/img.jpg"), "same image").unwrap();
+
+        let mut groups = detect(&dir);
+        let default_kept = groups[0].original().path.clone();
+        let default_extras = groups[0].extra_copies();
+        let found_in_photos = groups[0].keep_inside(&dir.join("Photos"));
+        let to_remove: Vec<_> = groups[0]
+            .paths_to_remove()
+            .iter()
+            .map(|f| f.path.clone())
+            .collect();
+        let found_in_other = groups[0].keep_inside(&dir.join("Other"));
+        let to_remove_after_other = groups[0].paths_to_remove().len();
+        fs::remove_dir_all(&dir).unwrap();
+
+        assert_eq!(default_kept, in_downloads);
+        assert_eq!(default_extras, 2);
+        assert!(found_in_photos);
+        assert_eq!(
+            to_remove,
+            vec![in_downloads],
+            "both copies in Photos stay; only the one outside is extra"
+        );
+        assert_eq!(groups[0].extra_copies(), 1);
+        assert!(!found_in_other, "no copy in Other: nothing changes");
+        assert_eq!(to_remove_after_other, 1);
     }
 
     #[test]
@@ -219,7 +361,7 @@ mod tests {
         assert!(
             groups
                 .iter()
-                .all(|g| g.duplicates.len() == 2 && g.extra_copies == 2)
+                .all(|g| g.paths_to_remove().len() == 2 && g.extra_copies() == 2)
         );
     }
 
