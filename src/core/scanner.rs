@@ -190,16 +190,5 @@ fn scan_recursive(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_should_ignore_directory() {
-        assert!(should_ignore_directory("node_modules"));
-        assert!(should_ignore_directory("target"));
-        assert!(should_ignore_directory(".git"));
-        assert!(should_ignore_directory(".cache"));
-        assert!(!should_ignore_directory("photos"));
-        assert!(!should_ignore_directory("documents"));
-    }
-}
+#[path = "../tests/core_scanner.rs"]
+mod tests;

@@ -9,12 +9,12 @@
 //! project keeps its three dependencies. Every case is reproducible: a failure
 //! prints its seed. Raise `CASES` locally to search harder.
 
+use crate::core::duplicates::hash_cache::HashCache;
+use crate::core::duplicates::trash::remove_duplicates;
 use crate::core::duplicates::{DuplicateGroup, find_exact_duplicates};
-use crate::core::hash_cache::HashCache;
 use crate::core::models::FileId;
 use crate::core::scanner::scan_directory;
 use crate::core::test_support::{fake_trash, no_progress, temp_dir};
-use crate::core::trash::remove_duplicates;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};

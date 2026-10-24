@@ -4,13 +4,13 @@
 //! lives here, in one place.
 
 use crate::cli::{Action, RunOptions};
+use crate::core::duplicates::hash_cache::HashCache;
+use crate::core::duplicates::trash::trash_duplicates;
 use crate::core::duplicates::{DuplicateGroup, find_exact_duplicates, keep_copies_inside};
 use crate::core::files::{filter_by_extension, find_same_name_files, get_top_largest};
-use crate::core::hash_cache::HashCache;
 use crate::core::models::FileInfo;
 use crate::core::scanner::scan_directory;
 use crate::core::similarity::{SimilarityError, find_similar_documents};
-use crate::core::trash::trash_duplicates;
 use crate::ui::duplicates::choose_groups_to_trash;
 use crate::ui::input::{folder_in_scan, in_scan_form, read_line_from_user, resolve_user_path};
 use crate::ui::progress::Spinner;

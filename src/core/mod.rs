@@ -9,24 +9,18 @@
 //! - `models`      FileInfo and FileId, shared by everything below
 //! - `scanner`     directory walk and ignore rules
 //! - `files`       simple queries: biggest, by type, same name, space used
-//! - `hashing`     full and 4 KB prefix SHA-256, parallel hashing
-//! - `hash_cache`  hashes saved between runs
-//! - `duplicates`  finding identical files
-//! - `trash`       moving extra copies to the Trash, re-verified from disk
+//! - `duplicates/` finding identical files, hashing, the hash cache and
+//!   moving extra copies to the Trash
 //! - `similarity`  comparing documents by content
 
 pub mod duplicates;
 pub mod files;
-pub mod hash_cache;
-pub mod hashing;
 pub mod models;
 pub mod scanner;
 pub mod similarity;
-pub mod trash;
 
-#[cfg(all(test, unix))]
-mod duplicates_props;
 #[cfg(test)]
+#[path = "../tests/core_test_support.rs"]
 mod test_support;
 
 /// Progress callback for long operations, called as `(done, total)`.

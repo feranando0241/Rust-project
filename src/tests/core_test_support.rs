@@ -1,7 +1,7 @@
 //! Helpers shared by the unit and property tests of `core`.
 
+use crate::core::duplicates::hash_cache::HashCache;
 use crate::core::duplicates::{DuplicateGroup, find_exact_duplicates};
-use crate::core::hash_cache::HashCache;
 use crate::core::scanner::scan_directory;
 use std::fs;
 use std::path::{Path, PathBuf};

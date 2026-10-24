@@ -92,3 +92,44 @@ fn source_files_stay_small() {
         too_long.join("\n")
     );
 }
+
+#[test]
+fn unit_tests_live_in_src_tests() {
+    let outside: Vec<PathBuf> = rust_files(&src())
+        .into_iter()
+        .filter(|file| !file.starts_with(src().join("tests")))
+        .collect();
+    let hits = find(&outside, &["#[test]", "mod tests {"]);
+    assert!(
+        hits.is_empty(),
+        "unit tests go in src/tests/<layer>_<module>.rs, loaded with `#[cfg(test)] #[path = \"...\"] mod tests;`:\n{}",
+        hits.join("\n")
+    );
+}
+
+#[test]
+fn every_unit_test_file_is_loaded() {
+    let tests_dir = src().join("tests");
+    // Every file a `#[path = "..."]` points to, resolved from the file declaring it
+    let mut loaded = Vec::new();
+    for file in rust_files(&src()) {
+        for line in fs::read_to_string(&file).unwrap().lines() {
+            if let Some(rest) = line.trim().strip_prefix("#[path = \"")
+                && let Some(target) = rest.split('"').next()
+            {
+                let dir = file.parent().unwrap();
+                loaded.push(dir.join(target).canonicalize().unwrap());
+            }
+        }
+    }
+    let orphans: Vec<String> = rust_files(&tests_dir)
+        .into_iter()
+        .filter(|file| !loaded.contains(&file.canonicalize().unwrap()))
+        .map(|file| file.display().to_string())
+        .collect();
+    assert!(
+        orphans.is_empty(),
+        "these test files are never compiled, so their tests never run. Load each one from its module with `#[cfg(test)] #[path = \"...\"] mod tests;`:\n{}",
+        orphans.join("\n")
+    );
+}

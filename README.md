@@ -192,21 +192,23 @@ src/
 │   ├── models.rs      — FileInfo and FileId (identity of a file's data on disk)
 │   ├── scanner.rs     — Recursive directory scanning and ignore rules
 │   ├── files.rs       — Biggest files, by type, same name, where the space goes
-│   ├── hashing.rs     — Full and 4 KB prefix SHA-256, parallel hashing
-│   ├── hash_cache.rs  — Hashes saved between runs
-│   ├── duplicates.rs  — Finding identical files (size → prefix → full hash)
-│   ├── trash.rs       — Moving extra copies to the Trash, re-verified from disk
-│   ├── similarity.rs  — Document similarity engine (Jaccard + bigrams)
-│   ├── duplicates_props.rs — Property tests (random folders vs. brute force)
-│   └── test_support.rs     — Helpers shared by core's tests
-└── ui/                — Everything printed or typed
+│   ├── duplicates/    — Everything about identical files
+│   │   ├── mod.rs        — Finding them (size → prefix → full hash)
+│   │   ├── hashing.rs    — Full and 4 KB prefix SHA-256, parallel hashing (private to duplicates/)
+│   │   ├── hash_cache.rs — Hashes saved between runs
+│   │   └── trash.rs      — Moving extra copies to the Trash, re-verified from disk
+│   └── similarity.rs  — Document similarity engine (Jaccard + bigrams)
+├── ui/                — Everything printed or typed
     ├── style.rs       — Colors, titles, prompts, text helpers
     ├── report.rs      — Result screens
     ├── input.rs       — Reading lines and paths
     ├── menu.rs        — Start screen and action menu
     ├── browser.rs     — Folder browser
     ├── picker.rs      — Paginated document picker
-    └── progress.rs    — Loading spinner with a live counter
+│   └── progress.rs    — Loading spinner with a live counter
+└── tests/             — Unit tests, one file per module (<layer>_<module>.rs)
+    ├── core_duplicates_props.rs — Property tests (random folders vs. brute force)
+    └── core_test_support.rs     — Helpers shared by core's tests
 tests/
 ├── cli.rs             — End-to-end tests that run the real binary
 └── architecture.rs    — Structure rules (see below)
@@ -217,6 +219,7 @@ tests/
 1. `core/` never imports `ui/`, `app` or `cli`.
 2. `core/` never prints or reads input; it returns data or a typed error.
 3. No source file grows past 500 lines; split it by responsibility instead.
+4. Unit tests live in `src/tests/`, not inside the production files, and every file there must be loaded by a `#[path]` (otherwise its tests would silently never run).
 
 On top of that, CI rejects unformatted code (`cargo fmt --check`) and any clippy warning. See [ADR-0002](docs/adr/0002-modular-architecture.md) for the reasoning and a short "how to add a feature" guide.
 
@@ -228,8 +231,8 @@ On top of that, CI rejects unformatted code (`cargo fmt --check`) and any clippy
 cargo test
 ```
 
-- **Unit tests** live next to the code they test (`#[cfg(test)]` in each module): ignore rules, duplicate detection (oldest kept, hardlinks, same prefix with different content, kept copy changed before trashing), file queries, similarity scoring, size formatting, exit commands and argument parsing.
-- **Property tests** in `src/core/duplicates_props.rs` build 150 random folders per run (exact copies, same-prefix-different-tail files, hardlinks, empty files, sizes around the 4 KB boundary). They check that detection matches a brute-force byte comparison with no cache, a cold cache and a warm cache. After moving the copies (to a fake Trash), they check that no content was lost, no duplicates remain and the freed space is what was promised. A failure prints the seed that reproduces it.
+- **Unit tests** live in `src/tests/`, one file per module (e.g. `src/tests/core_duplicates_trash.rs` for `src/core/duplicates/trash.rs`). Each module loads its file with `#[cfg(test)] #[path = "…"] mod tests;`, so the tests can still reach private items. They cover ignore rules, duplicate detection (oldest kept, hardlinks, same prefix with different content, kept copy changed before trashing), file queries, similarity scoring, size formatting, exit commands and argument parsing.
+- **Property tests** in `src/tests/core_duplicates_props.rs` build 150 random folders per run (exact copies, same-prefix-different-tail files, hardlinks, empty files, sizes around the 4 KB boundary). They check that detection matches a brute-force byte comparison with no cache, a cold cache and a warm cache. After moving the copies (to a fake Trash), they check that no content was lost, no duplicates remain and the freed space is what was promised. A failure prints the seed that reproduces it.
 - **End-to-end tests** in `tests/cli.rs` run the compiled binary against a temporary folder and check what the user sees: output and exit codes for every CLI action, the refusal to trash without a terminal, and the interactive menus.
 
 **Continuous integration:** GitHub Actions (`.github/workflows/ci.yml`) runs `cargo clippy --all-targets -- -D warnings` and `cargo test` on macOS and Linux for every push to `master` and every pull request. Any new warning fails the build.

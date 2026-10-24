@@ -99,3 +99,19 @@ The rules were sound; nothing *checked* them. Changes:
 - `models.rs` now owns `FileId` and `FileInfo::from_path`; `files.rs` owns `Usage` and the space totals; defaults live in `core`; test helpers live in `core/test_support.rs`.
 - `cargo fmt` was applied once. The stopword list is the only `#[rustfmt::skip]`, because rustfmt can't place the per-language comments stably.
 - **Enforcement:** `tests/architecture.rs` fails `cargo test` when `core/` imports `ui`/`app`/`cli`, when `core/` prints or reads input, or when a source file passes 500 lines. CI also runs `cargo fmt --check`. The rules now hold without anyone having to remember them.
+
+## Amendment: unit tests in their own folder (2026-10-24)
+
+Unit tests sat at the bottom of each production file, so files like `duplicates.rs` were 40 % tests, and reading the logic meant scrolling past them. They now live in `src/tests/<layer>_<module>.rs` (e.g. `core_duplicates.rs`), and each module loads its file with `#[cfg(test)] #[path = "…"] mod tests;`.
+
+The top-level `tests/` folder was rejected for these: it only sees a crate's public API, so it would need a `lib.rs` and would make private items (such as `DuplicateGroup`'s `kept` field, which guarantees a group always keeps a copy) public or untestable. With `#[path]` the tests stay child modules and keep their access, and production code is unchanged.
+
+`tests/architecture.rs` now also fails when a `#[test]` or `mod tests {` appears outside `src/tests/`, and when a file in `src/tests/` isn't loaded by any `#[path]` (its tests would never compile or run, and `cargo test` would still pass). Step 1 of "How to add a feature" means: add the unit test to `src/tests/`; the helpers are in `src/tests/core_test_support.rs`.
+
+## Amendment: duplicates grouped in a folder (2026-10-24)
+
+`hashing`, `hash_cache`, `duplicates` and `trash` (about 770 lines) form one feature: `hashing` was only used by detection and `trash`, and `trash` only acts on duplicate groups. They now live in `core/duplicates/` (detection in its `mod.rs`).
+
+The point is encapsulation, not looks: `hashing` is private to the folder, so the compiler stops anything outside it from depending on how hashes are made. `hash_cache` and `trash` stay public because `app.rs` and `ui/` use them (`crate::core::duplicates::trash::…`). There are no re-exports, so each item has one path.
+
+The rest of `core` stays flat: its modules are independent, and folders of one file would only add clicks. Group more when a feature has three or more files used mostly together, or when `core` passes about 12 files. Unit test files follow the module path: `src/tests/core_duplicates_trash.rs` for `core/duplicates/trash.rs`.

@@ -1,12 +1,12 @@
 //! Result screens: everything the app prints after a scan or an action.
 
 use crate::core::duplicates::DuplicateGroup;
+use crate::core::duplicates::trash::{SkipReason, TrashReport};
 use crate::core::files::{
     SameNameGroup, Usage, group_by_folder, usage_by_extension, usage_by_top_folder,
 };
 use crate::core::models::FileInfo;
 use crate::core::similarity::{RELATED, SimilarityMatch, VERY_SIMILAR};
-use crate::core::trash::{SkipReason, TrashReport};
 use crate::ui::style::{
     bar, bold, dim, folder_of, format_size, green, header, hint, plural, red, relative, rule,
     truncate, yellow,
