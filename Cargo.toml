@@ -4,6 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-trash = "5.2"
-sha2 = "0.10"
-pdf-extract = "0.8"
+trash = "5.2.9"
+sha2 = "0.11"
+pdf-extract = "0.12"

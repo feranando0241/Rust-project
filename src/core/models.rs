@@ -15,10 +15,13 @@ pub struct FileInfo {
     /// File extension in lowercase (e.g. "pdf", "png"), or `None` if there is none.
     pub extension: Option<String>,
     /// When the content last changed, if the system reports it.
+    // Read only by tests for now; drop the allow once a feature uses it.
+    #[allow(dead_code)]
     pub modified: Option<SystemTime>,
     /// When the file was last read, if the system reports it. Less reliable
     /// than `modified`: some volumes don't update it on every read, and
     /// reading a file (for example to hash it) can update it.
+    #[allow(dead_code)]
     pub accessed: Option<SystemTime>,
 }
 

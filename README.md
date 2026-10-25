@@ -235,7 +235,7 @@ cargo test
 - **Property tests** in `src/tests/core_duplicates_props.rs` build 150 random folders per run (exact copies, same-prefix-different-tail files, hardlinks, empty files, sizes around the 4 KB boundary). They check that detection matches a brute-force byte comparison with no cache, a cold cache and a warm cache. After moving the copies (to a fake Trash), they check that no content was lost, no duplicates remain and the freed space is what was promised. A failure prints the seed that reproduces it.
 - **End-to-end tests** in `tests/cli.rs` run the compiled binary against a temporary folder and check what the user sees: output and exit codes for every CLI action, the refusal to trash without a terminal, and the interactive menus.
 
-**Continuous integration:** GitHub Actions (`.github/workflows/ci.yml`) runs `cargo clippy --all-targets -- -D warnings` and `cargo test` on macOS and Linux for every push to `master` and every pull request. Any new warning fails the build.
+**Continuous integration:** GitHub Actions (`.github/workflows/ci.yml`) runs `cargo clippy --all-targets -- -D warnings` and `cargo test` on macOS and Linux for every push to `master` and every pull request. Any new warning fails the build. A separate job runs `cargo audit` against the [RustSec](https://rustsec.org) advisory database, on every push and also every Monday, since new vulnerabilities get published even when the code doesn't change.
 
 ---
 

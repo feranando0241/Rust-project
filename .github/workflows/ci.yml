@@ -6,8 +6,27 @@ on:
   push:
     branches: [master]
   pull_request:
+  # Weekly, because new advisories are published even when the code doesn't change
+  schedule:
+    - cron: "0 6 * * 1"
 
 jobs:
+  audit:
+    name: Security audit (dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Fails on any dependency with a known vulnerability (RustSec database).
+      # "Unmaintained" notices are shown but don't fail the build.
+      - name: Check dependencies for known vulnerabilities
+        run: cargo audit
+
+
   test:
     name: Test (${{ matrix.os }})
     strategy:

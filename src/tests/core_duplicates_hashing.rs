@@ -56,3 +56,15 @@ fn test_prefix_hash_only_reads_the_first_4_kb() {
 
     assert!(same_prefix && !same_full);
 }
+
+#[test]
+fn test_hash_format_matches_known_sha256() {
+    // The hash cache stores these strings, so the format must never change.
+    let dir = temp_dir("known_sha");
+    let path = dir.join("abc.txt");
+    fs::write(&path, b"abc").unwrap();
+    let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    assert_eq!(full_hash(&path).unwrap(), expected);
+    assert_eq!(prefix_hash(&path).unwrap(), expected);
+    fs::remove_dir_all(&dir).unwrap();
+}

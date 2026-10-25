@@ -39,7 +39,7 @@ pub fn full_hash(path: &Path) -> io::Result<String> {
         hasher.update(&buffer[..bytes_read]);
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(to_hex(&hasher.finalize()))
 }
 
 /// SHA-256 of only the first `PREFIX_BYTES` of a file. A cheap filter: two
@@ -50,7 +50,13 @@ pub fn prefix_hash(path: &Path) -> io::Result<String> {
     File::open(path)?
         .take(PREFIX_BYTES)
         .read_to_end(&mut prefix)?;
-    Ok(format!("{:x}", Sha256::digest(&prefix)))
+    Ok(to_hex(&Sha256::digest(&prefix)))
+}
+
+/// Lowercase hex, two digits per byte. Must stay stable: the hash cache stores
+/// these strings.
+fn to_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Threads used for full hashing: one per CPU core, up to `MAX_HASH_THREADS`.
