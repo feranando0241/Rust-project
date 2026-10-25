@@ -180,10 +180,7 @@ fn locate_base_file(root: &Path, file: &str) -> Result<FileInfo, AppError> {
     if !metadata.is_file() {
         return Err(AppError::NotAFile(path));
     }
-    Ok(FileInfo::from_path(
-        in_scan_form(root, path),
-        metadata.len(),
-    ))
+    Ok(FileInfo::from_metadata(in_scan_form(root, path), &metadata))
 }
 
 /// Prints the files matching an extension, or a notice when there are none.

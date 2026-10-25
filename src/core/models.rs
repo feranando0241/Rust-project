@@ -3,6 +3,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// Represents the essential information about a file on disk.
 #[derive(Debug, Clone)]
@@ -13,10 +14,17 @@ pub struct FileInfo {
     pub size_bytes: u64,
     /// File extension in lowercase (e.g. "pdf", "png"), or `None` if there is none.
     pub extension: Option<String>,
+    /// When the content last changed, if the system reports it.
+    pub modified: Option<SystemTime>,
+    /// When the file was last read, if the system reports it. Less reliable
+    /// than `modified`: some volumes don't update it on every read, and
+    /// reading a file (for example to hash it) can update it.
+    pub accessed: Option<SystemTime>,
 }
 
 impl FileInfo {
-    /// Builds a `FileInfo`, normalizing the extension to lowercase.
+    /// Builds a `FileInfo` without timestamps, normalizing the extension to
+    /// lowercase. Use `from_metadata` when the file's metadata is at hand.
     pub fn from_path(path: PathBuf, size_bytes: u64) -> FileInfo {
         let extension = path
             .extension()
@@ -26,6 +34,17 @@ impl FileInfo {
             path,
             size_bytes,
             extension,
+            modified: None,
+            accessed: None,
+        }
+    }
+
+    /// Builds a `FileInfo` with its size and timestamps from `metadata`.
+    pub fn from_metadata(path: PathBuf, metadata: &fs::Metadata) -> FileInfo {
+        FileInfo {
+            modified: metadata.modified().ok(),
+            accessed: metadata.accessed().ok(),
+            ..FileInfo::from_path(path, metadata.len())
         }
     }
 

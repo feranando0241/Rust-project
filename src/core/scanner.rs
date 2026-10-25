@@ -181,7 +181,7 @@ fn scan_recursive(
             let Ok(metadata) = entry.metadata() else {
                 continue;
             };
-            files.push(FileInfo::from_path(path, metadata.len()));
+            files.push(FileInfo::from_metadata(path, &metadata));
             on_progress(files.len(), 0);
         }
     }
