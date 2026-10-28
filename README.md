@@ -15,6 +15,7 @@ A fast, modular file scanner and organizer built in Rust. OxideClean helps you u
 | 5 | **Identical copies** | SHA-256 hash comparison — finds byte-for-byte identical files and moves the extra copies to Trash |
 | 6 | **Same-name file finder** | Groups files that share a filename across different folders |
 | 7 | **Document similarity** | Composite content analysis (vocabulary + bigrams + length) to find similar PDFs, text files, and source code |
+| 8 | **Forgotten files** | Big files neither modified nor read in months, and where that space is (read-only) |
 
 ---
 
@@ -70,11 +71,14 @@ oxide_clean ~/Downloads --dupes --trash -y   # same, without asking
 oxide_clean ~/Pictures --dupes --keep-in Albums --trash   # keep the copies inside Albums/
 oxide_clean ~ --dupes --exclude Library --exclude Backups  # leave folders out of the scan
 oxide_clean ~/Downloads --same-name          # files that share a name
+oxide_clean ~/Downloads --old                # untouched for 180+ days, biggest first
+oxide_clean ~/Downloads --old 365            # untouched for more than a year
 oxide_clean ~/Documents --similar thesis.pdf --threshold 50
 oxide_clean --help
 ```
 
 - `--dupes` on its own never deletes anything.
+- `--old [DAYS]` only lists; it never moves or changes anything. See [How forgotten files are found](#how-forgotten-files-are-found).
 - `--keep-in <FOLDER>` keeps, in each group, every copy inside that folder instead of the oldest, so nothing inside it is ever moved (groups without a copy there keep the oldest). If the folder doesn't exist or holds no copy at all, the run stops with an error and nothing is moved, so a typo can't make `--trash --yes` remove the copies you meant to keep.
 - `--exclude <FOLDER>` leaves a folder out of the scan; repeat it for several. Folders are relative to the scanned path, or full paths; `..` and symlinks to a folder inside the scan work too.
 - `--trash` always asks for confirmation unless `--yes`/`-y` is given. Without a terminal to ask on (e.g. in a script), it refuses and exits with an error.
@@ -114,6 +118,7 @@ What would you like to do?
   Clean up
     5  Find identical copies of files (and free up space)
     6  Find files with the same name in different places
+    8  Find big files nobody has touched in months
 
   Compare documents
     7  Find documents with similar content
@@ -171,6 +176,26 @@ Everything goes to the macOS Trash, where it can be restored.
 
 ---
 
+## How forgotten files are found
+
+A file is listed by `--old` (menu option 8) when **all three** hold, with the default of 180 days:
+
+1. It wasn't **modified** in the last 180 days.
+2. It wasn't **read** in the last 180 days, as far as the file system records reads.
+3. It didn't **arrive** on this disk, or have its details changed, in the last **30 days**.
+
+Exactly 180 days doesn't count; it must be older. The list shows the 20 biggest with how long each has been untouched, the total for all of them, and which folders hold that space. Hardlinks count once.
+
+**Why it errs towards listing less.** Unlike a duplicate, an old file may be the only copy, so a wrong "forgotten" is worse than a missed one. Every rule can only take files *off* the list:
+
+- Read times alone prove nothing: on APFS, reading a file often doesn't update them. So a recent read keeps a file off the list, but an old read time isn't trusted to mean "unread", and the screen says "untouched", never "unread".
+- Unpacking an archive or copying with `cp -p` keeps old modification dates, and on macOS it even moves the creation date back. The 30-day rule therefore uses the change time (ctime), which no tool can set back.
+- Files without a modification date, or with a date in the future, aren't judged; the screen says how many there were.
+
+Details and measurements: [ADR-0004](docs/adr/0004-forgotten-files.md).
+
+---
+
 ## Ignored directories and files
 
 OxideClean automatically skips folders and files that generate noise:
@@ -189,10 +214,11 @@ src/
 ├── cli.rs             — Command-line argument parsing
 ├── app.rs             — Actions shared by the CLI and the menus (incl. Trash rules)
 ├── core/              — Logic only: never prints, never reads input
-│   ├── models.rs      — FileInfo and FileId (identity of a file's data on disk)
+│   ├── models.rs      — FileInfo (size, dates) and FileId (identity of a file's data on disk)
 │   ├── paths.rs       — Matching folders typed by the user against scanned paths
 │   ├── scanner.rs     — Recursive directory scanning and ignore rules
 │   ├── files.rs       — Biggest files, by type, same name, where the space goes
+│   ├── old_files.rs   — Forgotten files: untouched for months (ADR-0004)
 │   ├── duplicates/    — Everything about identical files
 │   │   ├── mod.rs        — Finding them (size → prefix → full hash)
 │   │   ├── hashing.rs    — Full and 4 KB prefix SHA-256, parallel hashing (private to duplicates/)

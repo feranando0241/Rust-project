@@ -4,6 +4,7 @@
 //! interface is small. Move to `clap` once the ADR's revisit triggers are hit.
 
 use crate::core::files::DEFAULT_TOP;
+use crate::core::old_files::{DEFAULT_OLD_DAYS, days};
 use crate::core::similarity::DEFAULT_THRESHOLD;
 
 /// Text printed by `--help`.
@@ -23,6 +24,9 @@ ACTIONS:
       --trash              ...and move the extra copies to the Trash (asks first)
       --yes, -y            ...without asking
     --same-name            Files that share the same name
+    --old [DAYS]           Files neither modified nor read in DAYS days (default 180),
+                           biggest first (read-only). Files that arrived on this
+                           disk in the last 30 days are never listed
     --similar <FILE>       Documents with content similar to FILE
       --threshold <N>      Minimum similarity percentage (default 30)
 
@@ -36,6 +40,10 @@ FOLDER can be relative to PATH (e.g. --keep-in Photos) or a full path.
 File hashes are cached in ~/Library/Caches/oxide_clean (macOS) or
 ~/.cache/oxide_clean, or under $XDG_CACHE_HOME if set, so a second scan of the
 same folder skips unchanged files. Moving files to the Trash never relies on it.
+
+--old uses the dates the file system keeps. Copies made without keeping dates
+(plain cp, Finder) look new, and so does a file whose details changed in the
+last 30 days. It errs towards listing less. See docs/adr/0004.
 
 Colors are disabled when the output is not a terminal or NO_COLOR is set.
 ";
@@ -52,6 +60,8 @@ pub enum Action {
         keep_in: Option<String>,
     },
     SameName,
+    /// Files untouched for more than this many days (validated: at least 1).
+    Old(u64),
     Similar {
         file: String,
         threshold: f64,
@@ -125,6 +135,21 @@ pub fn parse_args(args: &[String]) -> Result<Command, String> {
                 keep_in: None,
             }),
             "--same-name" => Some(Action::SameName),
+            "--old" => {
+                // DAYS is optional, like N in --largest
+                let n = iter.peek().and_then(|v| v.parse::<u64>().ok());
+                if n.is_some() {
+                    iter.next();
+                }
+                let n = n.unwrap_or(DEFAULT_OLD_DAYS);
+                if n == 0 {
+                    return Err("--old needs at least 1 day".to_string());
+                }
+                if days(n).is_none() {
+                    return Err(format!("--old {} is too many days", n));
+                }
+                Some(Action::Old(n))
+            }
             "--similar" => Some(Action::Similar {
                 file: take_value(&mut iter, "--similar")?,
                 threshold: DEFAULT_THRESHOLD,

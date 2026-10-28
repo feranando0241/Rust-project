@@ -15,14 +15,16 @@ pub struct FileInfo {
     /// File extension in lowercase (e.g. "pdf", "png"), or `None` if there is none.
     pub extension: Option<String>,
     /// When the content last changed, if the system reports it.
-    // Read only by tests for now; drop the allow once a feature uses it.
-    #[allow(dead_code)]
     pub modified: Option<SystemTime>,
     /// When the file was last read, if the system reports it. Less reliable
     /// than `modified`: some volumes don't update it on every read, and
     /// reading a file (for example to hash it) can update it.
-    #[allow(dead_code)]
     pub accessed: Option<SystemTime>,
+    /// When the file's metadata last changed (ctime), which includes when it
+    /// arrived on this disk: copying or unpacking sets it, and unlike
+    /// `modified` (or the birth time, on macOS) no tool can set it back.
+    /// Off Unix, where std has no ctime, the creation time stands in.
+    pub changed: Option<SystemTime>,
 }
 
 impl FileInfo {
@@ -39,6 +41,7 @@ impl FileInfo {
             extension,
             modified: None,
             accessed: None,
+            changed: None,
         }
     }
 
@@ -47,6 +50,7 @@ impl FileInfo {
         FileInfo {
             modified: metadata.modified().ok(),
             accessed: metadata.accessed().ok(),
+            changed: status_changed(metadata),
             ..FileInfo::from_path(path, metadata.len())
         }
     }
@@ -63,6 +67,20 @@ impl FileInfo {
     pub fn extension_or<'a>(&'a self, default: &'a str) -> &'a str {
         self.extension.as_deref().unwrap_or(default)
     }
+}
+
+/// The file's ctime, the last change of its content or metadata.
+#[cfg(unix)]
+fn status_changed(m: &fs::Metadata) -> Option<SystemTime> {
+    use std::os::unix::fs::MetadataExt;
+    let secs = u64::try_from(m.ctime()).ok()?;
+    let nanos = u32::try_from(m.ctime_nsec()).ok()?;
+    Some(SystemTime::UNIX_EPOCH + std::time::Duration::new(secs, nanos))
+}
+
+#[cfg(not(unix))]
+fn status_changed(m: &fs::Metadata) -> Option<SystemTime> {
+    m.created().ok()
 }
 
 /// Where a file's data lives on disk (device + inode). Every path to the same

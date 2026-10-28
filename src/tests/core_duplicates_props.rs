@@ -14,36 +14,13 @@ use crate::core::duplicates::trash::remove_duplicates;
 use crate::core::duplicates::{DuplicateGroup, find_exact_duplicates};
 use crate::core::models::FileId;
 use crate::core::scanner::scan_directory;
-use crate::core::test_support::{fake_trash, no_progress, temp_dir};
+use crate::core::test_support::{Rng, fake_trash, no_progress, temp_dir};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Random folders checked per test run.
 const CASES: u64 = 150;
-
-/// xorshift64*: small, fast, and deterministic for a given seed.
-struct Rng(u64);
-
-impl Rng {
-    fn new(seed: u64) -> Rng {
-        Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
-    }
-    fn next(&mut self) -> u64 {
-        let mut x = self.0;
-        x ^= x >> 12;
-        x ^= x << 25;
-        x ^= x >> 27;
-        self.0 = x;
-        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
-    }
-    fn bytes(&mut self, len: usize) -> Vec<u8> {
-        (0..len).map(|_| self.next() as u8).collect()
-    }
-}
 
 /// Fills `dir` with a random mix of files designed to reach every branch.
 fn random_folder(rng: &mut Rng, dir: &Path) {

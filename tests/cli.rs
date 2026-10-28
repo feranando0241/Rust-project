@@ -2,10 +2,11 @@
 //! check what the user sees (output and exit codes). They pin down the
 //! current behavior so internal refactors can't silently change it.
 
-use std::fs;
+use std::fs::{self, File, FileTimes};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::{Duration, SystemTime};
 
 /// Builds a fixture folder:
 /// - one pair of identical files in different folders (a real duplicate)
@@ -316,6 +317,70 @@ fn exclude_leaves_a_folder_out_of_the_scan() {
     assert_eq!(unknown.status.code(), Some(0));
     assert!(stdout(&unknown).contains("no such folder here, ignored"));
     assert!(stdout(&unknown).contains("1 extra copy in 1 group"));
+}
+
+#[test]
+fn old_never_lists_files_that_just_arrived() {
+    // An unpacked archive: old modification and access dates, but it just
+    // arrived (new ctime, which no tool can set back). It must not be listed.
+    let dir = fixture("old_arrived");
+    let two_years_ago = SystemTime::now() - Duration::from_secs(730 * 86_400);
+    let unpacked = dir.join("Videos/clip.mp4");
+    File::options()
+        .write(true)
+        .open(&unpacked)
+        .unwrap()
+        .set_times(
+            FileTimes::new()
+                .set_modified(two_years_ago)
+                .set_accessed(two_years_ago),
+        )
+        .unwrap();
+    let out = run(&[path_str(&dir), "--old"], "");
+    let still_there = unpacked.exists();
+    fs::remove_dir_all(&dir).unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let text = stdout(&out);
+    assert!(text.contains("Files untouched for more than 180 days"));
+    assert!(
+        !text.contains("clip.mp4"),
+        "a file that just arrived was listed"
+    );
+    assert!(text.contains("None found."));
+    assert!(
+        text.contains("not listed: they arrived on this disk"),
+        "files left out must be reported, not dropped silently"
+    );
+    assert!(still_there, "--old is read-only");
+}
+
+#[test]
+fn old_rejects_unusable_thresholds() {
+    for (days, message) in [
+        ("0", "at least 1 day"),
+        ("300000000000000", "too many days"),
+    ] {
+        let out = run(&[".", "--old", days], "");
+        assert_eq!(out.status.code(), Some(2), "--old {}", days);
+        assert!(stderr(&out).contains(message), "--old {}", days);
+    }
+    assert!(stdout(&run(&["--help"], "")).contains("--old [DAYS]"));
+}
+
+#[test]
+fn interactive_old_files_asks_for_days() {
+    let dir = fixture("interactive_old");
+    // Enter takes the default; then an invalid answer
+    let input = format!("{}\n8\n\n8\nabc\n0\nq\n", path_str(&dir));
+    let out = run(&[], &input);
+    fs::remove_dir_all(&dir).unwrap();
+
+    assert_eq!(out.status.code(), Some(0));
+    let text = stdout(&out);
+    assert!(text.contains("Find big files nobody has touched in months"));
+    assert!(text.contains("Files untouched for more than 180 days"));
+    assert!(stderr(&out).contains("Type a number of days greater than 0"));
 }
 
 #[test]

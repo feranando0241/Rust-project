@@ -5,6 +5,7 @@ use crate::core::models::FileInfo;
 use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::OnceLock;
+use std::time::Duration;
 
 /// Width of horizontal rules.
 const WIDTH: usize = 72;
@@ -121,6 +122,18 @@ pub fn format_size(bytes: u64) -> String {
         b if b >= MB => format!("{:.2} MB", b as f64 / MB as f64),
         b if b >= KB => format!("{:.2} KB", b as f64 / KB as f64),
         b => format!("{} B", b),
+    }
+}
+
+/// A rough, human age like "12 days", "8 months" or "3 years". Months are
+/// 30 days and years 365: precise enough to judge what's old, and no calendar
+/// or time zone involved.
+pub fn format_age(age: Duration) -> String {
+    let days = (age.as_secs() / 86_400) as usize;
+    match days {
+        d if d < 60 => plural(d, "day", "days"),
+        d if d < 730 => plural(d / 30, "month", "months"),
+        d => plural(d / 365, "year", "years"),
     }
 }
 

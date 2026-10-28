@@ -6,10 +6,11 @@ use crate::core::files::{
     SameNameGroup, Usage, group_by_folder, usage_by_extension, usage_by_top_folder,
 };
 use crate::core::models::FileInfo;
+use crate::core::old_files::{ARRIVAL_GRACE_DAYS, OldFiles};
 use crate::core::similarity::{RELATED, SimilarityMatch, VERY_SIMILAR};
 use crate::ui::style::{
-    bar, bold, dim, folder_of, format_size, green, header, hint, plural, red, relative, rule,
-    truncate, yellow,
+    bar, bold, dim, folder_of, format_age, format_size, green, header, hint, plural, red, relative,
+    rule, truncate, yellow,
 };
 use std::path::{Path, PathBuf};
 
@@ -17,6 +18,8 @@ use std::path::{Path, PathBuf};
 const NAME_W: usize = 34;
 /// How many rows the scan summary shows per section.
 const SUMMARY_ROWS: usize = 5;
+/// How many forgotten files are listed one by one; the totals cover all.
+const OLD_SHOWN: usize = 20;
 
 // ─────────────────────────────────────────────────────────────
 // SCAN OVERVIEW
@@ -36,7 +39,23 @@ pub fn print_summary(root: &Path, files: &[FileInfo]) {
         bold(&format_size(total_size))
     );
 
-    let by_folder: Vec<(String, Usage)> = usage_by_top_folder(root, files)
+    let by_type: Vec<(String, Usage)> = usage_by_extension(files)
+        .into_iter()
+        .map(|(ext, usage)| (ext.unwrap_or_else(|| "no ext".to_string()), usage))
+        .collect();
+
+    print_ranking(
+        "Where the space goes, by folder",
+        &folder_rows(root, files),
+        total_size,
+    );
+    print_ranking("Where the space goes, by file type", &by_type, total_size);
+    println!();
+}
+
+/// Space per top-level folder of `root`, labeled for display.
+fn folder_rows(root: &Path, files: &[FileInfo]) -> Vec<(String, Usage)> {
+    usage_by_top_folder(root, files)
         .into_iter()
         .map(|(folder, usage)| {
             let label = folder.map_or("(directly in this folder)".to_string(), |f| {
@@ -44,15 +63,7 @@ pub fn print_summary(root: &Path, files: &[FileInfo]) {
             });
             (label, usage)
         })
-        .collect();
-    let by_type: Vec<(String, Usage)> = usage_by_extension(files)
-        .into_iter()
-        .map(|(ext, usage)| (ext.unwrap_or_else(|| "no ext".to_string()), usage))
-        .collect();
-
-    print_ranking("Where the space goes, by folder", &by_folder, total_size);
-    print_ranking("Where the space goes, by file type", &by_type, total_size);
-    println!();
+        .collect()
 }
 
 /// Prints the top rows (already sorted, most space first) with share-of-total bars.
@@ -148,6 +159,88 @@ pub fn print_top_largest(root: &Path, files: &[FileInfo]) {
             dim(&folder_of(file, root))
         );
     }
+    println!();
+}
+
+/// Displays the forgotten files (see ADR-0004): the biggest ones, the total,
+/// where that space is, and how many files couldn't be judged or were
+/// protected for having just arrived.
+pub fn print_old_files(root: &Path, found: &OldFiles, days: u64) {
+    header(&format!("Files untouched for more than {} days", days));
+    hint("Neither modified nor read in that time, as far as the file system records it.");
+
+    if found.forgotten.is_empty() {
+        let all_judged = found.just_arrived + found.no_date + found.future_date == 0;
+        if all_judged {
+            println!("\n  None found. Every file here was changed or read recently.");
+        } else {
+            println!("\n  None found.");
+        }
+    } else {
+        println!(
+            "\n{}",
+            dim(&format!(
+                "{:<4} {:<NAME_W$} {:>10}  {:>10}  {}",
+                "#", "NAME", "SIZE", "UNTOUCHED", "FOLDER"
+            ))
+        );
+        for (i, old) in found.forgotten.iter().take(OLD_SHOWN).enumerate() {
+            println!(
+                "{:<4} {:<NAME_W$} {}  {:>10}  {}",
+                i + 1,
+                truncate(old.file.name(), NAME_W),
+                bold(&format!("{:>10}", format_size(old.file.size_bytes))),
+                format_age(old.untouched),
+                dim(&folder_of(&old.file, root))
+            );
+        }
+        if found.forgotten.len() > OLD_SHOWN {
+            println!(
+                "{}",
+                dim(&format!(
+                    "… and {} more (all counted below)",
+                    found.forgotten.len() - OLD_SHOWN
+                ))
+            );
+        }
+
+        println!();
+        rule();
+        println!(
+            "{} untouched · {} in total",
+            plural(found.total.files, "file", "files"),
+            yellow(&bold(&format_size(found.total.bytes)))
+        );
+        let files: Vec<FileInfo> = found.forgotten.iter().map(|f| f.file.clone()).collect();
+        print_ranking(
+            "Where that space is, by folder",
+            &folder_rows(root, &files),
+            found.total.bytes,
+        );
+    }
+
+    // Never drop a file silently: say what was left out and why
+    println!();
+    if found.just_arrived > 0 {
+        hint(&format!(
+            "{} not listed: they arrived on this disk (or their details changed) in the last {} days.",
+            plural(found.just_arrived, "file", "files"),
+            ARRIVAL_GRACE_DAYS
+        ));
+    }
+    if found.no_date > 0 {
+        hint(&format!(
+            "{} not judged: the system reports no modification date.",
+            plural(found.no_date, "file", "files")
+        ));
+    }
+    if found.future_date > 0 {
+        hint(&format!(
+            "{} not judged: a date is in the future (check the clock).",
+            plural(found.future_date, "file", "files")
+        ));
+    }
+    hint("Copies made without keeping dates look new. Nothing was moved or changed.");
     println!();
 }
 

@@ -9,6 +9,7 @@ use crate::core::duplicates::trash::trash_duplicates;
 use crate::core::duplicates::{DuplicateGroup, find_exact_duplicates, keep_copies_inside};
 use crate::core::files::{filter_by_extension, find_same_name_files, get_top_largest};
 use crate::core::models::FileInfo;
+use crate::core::old_files::{days, find_old_files};
 use crate::core::paths::{folder_in_scan, in_scan_form};
 use crate::core::scanner::scan_directory;
 use crate::core::similarity::{SimilarityError, find_similar_documents};
@@ -16,7 +17,7 @@ use crate::ui::duplicates::choose_groups_to_trash;
 use crate::ui::input::{read_line_from_user, resolve_user_path};
 use crate::ui::progress::Spinner;
 use crate::ui::report::{
-    print_exact_duplicates, print_filtered_files, print_same_name_results,
+    print_exact_duplicates, print_filtered_files, print_old_files, print_same_name_results,
     print_similarity_results, print_top_largest, print_trash_report,
 };
 use crate::ui::style::{hint, plural, prompt};
@@ -24,6 +25,7 @@ use std::fmt;
 use std::fs;
 use std::io::{self, IsTerminal};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// Everything that can make an action fail. Each variant keeps the details
 /// (and the underlying error, when there is one) instead of a pre-built
@@ -161,6 +163,7 @@ pub fn run_action(root: &Path, action: Action, options: &RunOptions) -> Result<(
             handle_duplicates(root, &files, options, keep_in.as_deref(), mode)?
         }
         Action::SameName => show_same_name_files(root, &files),
+        Action::Old(n) => show_old_files(root, &files, n),
         Action::Similar { file, threshold } => {
             let target = locate_base_file(root, &file)?;
             show_similar_documents(root, &target, &files, threshold)?;
@@ -204,6 +207,17 @@ pub fn show_files_by_extension(root: &Path, files: &[FileInfo], ext: &str) {
 pub fn show_same_name_files(root: &Path, files: &[FileInfo]) {
     let groups = find_same_name_files(files);
     print_same_name_results(root, &groups);
+}
+
+/// Prints the files untouched for more than `n` days (see ADR-0004). `n`
+/// must be a valid threshold (`core::old_files::days`); the CLI and the menu
+/// check it first.
+pub fn show_old_files(root: &Path, files: &[FileInfo], n: u64) {
+    let threshold = days(n).expect("the caller checked the number of days");
+    // Read the clock after the scan, so no scanned date can be in the future
+    // just because it was written during the scan
+    let now = SystemTime::now();
+    print_old_files(root, &find_old_files(files, now, threshold), n);
 }
 
 /// Compares `target` with the other documents and prints the matches.

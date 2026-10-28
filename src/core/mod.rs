@@ -7,6 +7,7 @@
 //! terminal UI change without touching the logic that can delete files.
 //!
 //! - `models`      FileInfo and FileId, shared by everything below
+//! - `old_files`   forgotten files: untouched for months (see ADR-0004)
 //! - `paths`       matching folders typed by the user against scanned paths
 //! - `scanner`     directory walk and ignore rules
 //! - `files`       simple queries: biggest, by type, same name, space used
@@ -17,6 +18,7 @@
 pub mod duplicates;
 pub mod files;
 pub mod models;
+pub mod old_files;
 pub mod paths;
 pub mod scanner;
 pub mod similarity;

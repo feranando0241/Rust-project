@@ -38,3 +38,26 @@ pub fn fake_trash(dir: &Path) -> impl Fn(&Path) -> Result<(), String> + '_ {
         fs::rename(path, bin.join(name)).map_err(|e| e.to_string())
     }
 }
+
+/// xorshift64*: small, fast, and deterministic for a given seed.
+pub struct Rng(u64);
+
+impl Rng {
+    pub fn new(seed: u64) -> Rng {
+        Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1)
+    }
+    pub fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        self.0 = x;
+        x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+    pub fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+    pub fn bytes(&mut self, len: usize) -> Vec<u8> {
+        (0..len).map(|_| self.next() as u8).collect()
+    }
+}

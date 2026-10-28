@@ -105,9 +105,33 @@ fn test_usage_errors() {
         ". --largest --keep-in Photos",
         ". --dupes --keep-in",
         ". --exclude",
+        ". --old 0",
+        ". --old 300000000000000",
+        ". --old 30 --trash",
+        ". --old 30 --threshold 5",
         ". other",
         "--dupes",
     ] {
         assert!(parse(bad).is_err(), "expected a usage error for '{}'", bad);
     }
+}
+
+#[test]
+fn test_old_days_are_optional() {
+    assert_eq!(
+        parse(". --old"),
+        run(".", Some(Action::Old(DEFAULT_OLD_DAYS)))
+    );
+    assert_eq!(parse(". --old 30"), run(".", Some(Action::Old(30))));
+    assert_eq!(
+        parse("--old 30 --exclude Backups ."),
+        Ok(Command::Run {
+            path: ".".into(),
+            action: Some(Action::Old(30)),
+            options: RunOptions {
+                use_cache: true,
+                exclude: vec!["Backups".into()],
+            },
+        })
+    );
 }
