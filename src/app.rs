@@ -9,10 +9,11 @@ use crate::core::duplicates::trash::trash_duplicates;
 use crate::core::duplicates::{DuplicateGroup, find_exact_duplicates, keep_copies_inside};
 use crate::core::files::{filter_by_extension, find_same_name_files, get_top_largest};
 use crate::core::models::FileInfo;
+use crate::core::paths::{folder_in_scan, in_scan_form};
 use crate::core::scanner::scan_directory;
 use crate::core::similarity::{SimilarityError, find_similar_documents};
 use crate::ui::duplicates::choose_groups_to_trash;
-use crate::ui::input::{folder_in_scan, in_scan_form, read_line_from_user, resolve_user_path};
+use crate::ui::input::{read_line_from_user, resolve_user_path};
 use crate::ui::progress::Spinner;
 use crate::ui::report::{
     print_exact_duplicates, print_filtered_files, print_same_name_results,
@@ -103,7 +104,7 @@ pub fn scan(root: &Path, options: &RunOptions) -> io::Result<Vec<FileInfo>> {
     // ponytail: excluded folders are still walked and then filtered out; skip
     // them during the walk if excluding huge folders ever feels slow.
     for folder in &options.exclude {
-        let path = folder_in_scan(root, folder);
+        let path = folder_in_scan(root, &resolve_user_path(folder));
         if !path.is_dir() {
             hint(&format!(
                 "(--exclude {}: no such folder here, ignored)",
@@ -255,7 +256,7 @@ pub fn handle_duplicates(
     // whether or not any duplicates turn up
     let keep_path = match keep_in {
         Some(folder) => {
-            let path = folder_in_scan(root, folder);
+            let path = folder_in_scan(root, &resolve_user_path(folder));
             if !path.is_dir() {
                 return Err(AppError::NotADirectory(path));
             }

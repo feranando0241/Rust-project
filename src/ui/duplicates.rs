@@ -2,7 +2,8 @@
 //! them, only some groups, or first pick a folder whose copies should be kept.
 
 use crate::core::duplicates::{DuplicateGroup, keep_copies_inside};
-use crate::ui::input::{folder_in_scan, parse_selection, read_line_from_user};
+use crate::core::paths::folder_in_scan;
+use crate::ui::input::{parse_selection, read_line_from_user, resolve_user_path};
 use crate::ui::report::print_exact_duplicates;
 use crate::ui::style::{bold, error, hint, plural, prompt};
 use std::path::Path;
@@ -61,7 +62,7 @@ pub fn choose_groups_to_trash(
 /// Switches every group that has copies inside `folder` to keep all of them,
 /// then shows the groups again so the user sees what changed.
 fn keep_copies_in(root: &Path, groups: &mut [DuplicateGroup], folder: &str) {
-    let path = folder_in_scan(root, folder);
+    let path = folder_in_scan(root, &resolve_user_path(folder));
     if !path.is_dir() {
         error(&format!("'{}' is not a folder here.", folder));
         return;

@@ -76,7 +76,7 @@ oxide_clean --help
 
 - `--dupes` on its own never deletes anything.
 - `--keep-in <FOLDER>` keeps, in each group, every copy inside that folder instead of the oldest, so nothing inside it is ever moved (groups without a copy there keep the oldest). If the folder doesn't exist or holds no copy at all, the run stops with an error and nothing is moved, so a typo can't make `--trash --yes` remove the copies you meant to keep.
-- `--exclude <FOLDER>` leaves a folder out of the scan; repeat it for several. Folders are relative to the scanned path, or full paths.
+- `--exclude <FOLDER>` leaves a folder out of the scan; repeat it for several. Folders are relative to the scanned path, or full paths; `..` and symlinks to a folder inside the scan work too.
 - `--trash` always asks for confirmation unless `--yes`/`-y` is given. Without a terminal to ask on (e.g. in a script), it refuses and exits with an error.
 - Output can be piped or redirected (`> report.txt`); colors turn off automatically.
 - Exit codes: `0` success, `1` runtime error, `2` invalid arguments.
@@ -190,6 +190,7 @@ src/
 ├── app.rs             — Actions shared by the CLI and the menus (incl. Trash rules)
 ├── core/              — Logic only: never prints, never reads input
 │   ├── models.rs      — FileInfo and FileId (identity of a file's data on disk)
+│   ├── paths.rs       — Matching folders typed by the user against scanned paths
 │   ├── scanner.rs     — Recursive directory scanning and ignore rules
 │   ├── files.rs       — Biggest files, by type, same name, where the space goes
 │   ├── duplicates/    — Everything about identical files

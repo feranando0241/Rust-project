@@ -18,21 +18,6 @@ fn test_parse_selection() {
 }
 
 #[test]
-fn test_folder_in_scan() {
-    let root = Path::new("/scan");
-    assert_eq!(folder_in_scan(root, "Photos"), Path::new("/scan/Photos"));
-    assert_eq!(
-        folder_in_scan(root, "./Photos/2024"),
-        Path::new("/scan/./Photos/2024")
-    );
-    // Matching is by path components, so "./" doesn't matter
-    assert!(
-        Path::new("/scan/Photos/2024/a.jpg").starts_with(folder_in_scan(root, "./Photos/2024"))
-    );
-    assert!(!Path::new("/scan/Photos2/a.jpg").starts_with(folder_in_scan(root, "Photos")));
-}
-
-#[test]
 fn test_is_exit_command() {
     assert!(is_exit_command("0"));
     assert!(is_exit_command("exit"));

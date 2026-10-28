@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// Reads a line from standard input (keyboard) and trims whitespace and newlines.
 pub fn read_line_from_user() -> String {
@@ -48,31 +48,6 @@ pub fn resolve_user_path(input: &str) -> PathBuf {
         PathBuf::from(".")
     } else {
         PathBuf::from(input)
-    }
-}
-
-/// Expresses `path` the way the scanner builds paths for `root` (root +
-/// relative part), so it can be compared with scanned files. A path outside
-/// `root`, or one that can't be resolved, is returned unchanged.
-pub fn in_scan_form(root: &Path, path: PathBuf) -> PathBuf {
-    match (path.canonicalize(), root.canonicalize()) {
-        (Ok(abs), Ok(root_abs)) => match abs.strip_prefix(&root_abs) {
-            Ok(rel) => root.join(rel),
-            Err(_) => abs,
-        },
-        _ => path,
-    }
-}
-
-/// A folder typed by the user (`--keep-in`, `--exclude`, or in the menu), in
-/// the same form as the scanned paths. Relative folders are taken relative to
-/// the scanned `root`; `~` is expanded.
-pub fn folder_in_scan(root: &Path, input: &str) -> PathBuf {
-    let typed = resolve_user_path(input);
-    if typed.is_absolute() {
-        in_scan_form(root, typed)
-    } else {
-        root.join(typed)
     }
 }
 

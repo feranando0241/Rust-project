@@ -291,6 +291,27 @@ fn exclude_leaves_a_folder_out_of_the_scan() {
     assert!(text.contains("Left out 1 file inside 'Photos/backup'"));
     assert!(text.contains("No identical copies found"));
 
+    // Other spellings of the same folder exclude it too (they used to match nothing)
+    let dir = fixture("exclude_spellings");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(dir.join("Photos/backup"), dir.join("Backup")).unwrap();
+    let dotdot = run(
+        &[
+            path_str(&dir),
+            "--dupes",
+            "--exclude",
+            "Photos/../Photos/backup",
+        ],
+        "",
+    );
+    #[cfg(unix)]
+    let symlink = run(&[path_str(&dir), "--dupes", "--exclude", "Backup"], "");
+    fs::remove_dir_all(&dir).unwrap();
+    assert!(stdout(&dotdot).contains("Left out 1 file"));
+    assert!(stdout(&dotdot).contains("No identical copies found"));
+    #[cfg(unix)]
+    assert!(stdout(&symlink).contains("Left out 1 file"));
+
     // A folder that doesn't exist is reported and ignored, not fatal
     assert_eq!(unknown.status.code(), Some(0));
     assert!(stdout(&unknown).contains("no such folder here, ignored"));
